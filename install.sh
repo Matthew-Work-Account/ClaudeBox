@@ -1,17 +1,54 @@
 #!/usr/bin/env bash
-# install.sh -- ClaudeBox installer
-# Installs ClaudeBox to ~/.local/share/claudebox/ (CLAUDEBOX_HOME) and
-# creates a thin launcher at ~/.local/bin/claudebox.
+# ClaudeBox installer.
+# Installs to CLAUDEBOX_HOME (~/.local/share/claudebox/) and creates a thin
+# launcher at ~/.local/bin/claudebox.
 # Idempotent: overwrites existing install, skips PATH if already configured.
+#
+# Two install modes:
+#   local  -- run directly from a git clone; BASH_SOURCE[0] resolves to a file
+#   remote -- piped from curl; BASH_SOURCE[0] is empty/unset or non-existent;
+#             downloads a GitHub tarball to a temp dir and sets SCRIPT_DIR
+#             so the copy logic below runs without modification
 set -euo pipefail
 
 CLAUDEBOX_HOME="${HOME}/.local/share/claudebox"
 LAUNCHER_DIR="${HOME}/.local/bin"
 CONFIG_DIR="${HOME}/.claudebox"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-echo "ClaudeBox Installer"
-echo "==================="
+# --- Detect remote (curl|bash) vs local install ---
+# BASH_SOURCE[0] is empty/unset when the script is piped from curl. The
+# file-existence check also covers process substitution (/dev/fd/* paths).
+_src="${BASH_SOURCE[0]:-}"
+if [[ -z "$_src" ]] || [[ ! -f "$_src" ]]; then
+    REPO="https://github.com/Matthew-Work-Account/ClaudeBox"
+    TARBALL_URL="${REPO}/archive/refs/heads/main.tar.gz"
+    TMPDIR_CB="$(mktemp -d)"
+    trap 'rm -rf "${TMPDIR_CB}"' EXIT
+
+    echo "ClaudeBox Installer (remote)"
+    echo "============================"
+    echo "Downloading ClaudeBox from GitHub..."
+
+    TARBALL_FILE="${TMPDIR_CB}/claudebox.tar.gz"
+    if ! curl -fsSL -o "${TARBALL_FILE}" "${TARBALL_URL}"; then
+        echo "Failed to download ClaudeBox from GitHub -- check your network connection"
+        exit 1
+    fi
+
+    # --strip-components=1 drops the top-level 'ClaudeBox-main/' directory so
+    # extracted files land directly in TMPDIR_CB, matching CLAUDEBOX_HOME layout.
+    if ! tar -xzf "${TARBALL_FILE}" --strip-components=1 -C "${TMPDIR_CB}"; then
+        echo "Failed to extract ClaudeBox archive"
+        exit 1
+    fi
+
+    SCRIPT_DIR="${TMPDIR_CB}"
+else
+    SCRIPT_DIR="$(cd "$(dirname "$_src")" && pwd)"
+
+    echo "ClaudeBox Installer"
+    echo "==================="
+fi
 
 # --- Check for old sed-patched layout ---
 old_files_found=false

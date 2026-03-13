@@ -42,9 +42,9 @@ cb_detect_language() {
         done <<< "$markers"
     done
 
-    # No match found
+    # No match found -- fall back to "none" (language-agnostic container)
     if [[ -t 0 ]]; then
-        # Interactive terminal: prompt user to select
+        # Interactive terminal: prompt user to select or accept none
         echo "Could not auto-detect project language." >&2
         echo "Available languages:" >&2
         local langs=()
@@ -52,13 +52,20 @@ cb_detect_language() {
             [[ -f "$lang_file" ]] || continue
             local name
             name=$(jq -r '.name' "$lang_file")
+            [[ "$name" == "none" ]] && continue
             langs+=("$name")
             echo "  ${#langs[@]}) $name" >&2
         done
-        echo -n "Select language (1-${#langs[@]}): " >&2
+        local none_idx=$(( ${#langs[@]} + 1 ))
+        echo "  ${none_idx}) none (no language-specific setup)" >&2
+        echo -n "Select language (1-${none_idx}) [${none_idx}]: " >&2
         local choice
         read -r choice
-        if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#langs[@]} )); then
+        choice="${choice:-${none_idx}}"
+        if [[ "$choice" == "$none_idx" ]]; then
+            echo "none"
+            return 0
+        elif [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#langs[@]} )); then
             echo "${langs[$((choice-1))]}"
             return 0
         else
@@ -66,7 +73,7 @@ cb_detect_language() {
             return 1
         fi
     else
-        echo "Error: could not auto-detect project language and not running interactively." >&2
-        return 1
+        echo "none"
+        return 0
     fi
 }

@@ -10,13 +10,18 @@ ClaudeBox launches [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 
 - **Docker** running on your machine
 - **jq** installed on the host (`apt install jq` or `brew install jq`)
-- **Claude Code** logged in once on the host (`~/.claude/.credentials.json` must exist)
 - **bash** (Linux/macOS/WSL). Windows users also need PowerShell 5.1+.
 
 ### Install
 
 ```bash
-git clone <repo-url> && cd claudebox
+# Option 1: curl one-liner (no git clone required)
+curl -fsSL https://raw.githubusercontent.com/Matthew-Work-Account/ClaudeBox/main/install.sh | bash
+```
+
+```bash
+# Option 2: clone and install locally
+git clone https://github.com/Matthew-Work-Account/ClaudeBox.git && cd ClaudeBox
 bash install.sh
 ```
 
@@ -65,17 +70,14 @@ leaf name (e.g. `api`, `web`, `core` in a monorepo).
 | Host Path | Container Path | Mode |
 |-----------|---------------|------|
 | Project directory | `/workspace/{project}` | read-write |
-| `~/.claude/settings.json` | `/home/node/.claude/settings.json` | bind-mount ro |
-| `~/.claude/.credentials.json` | `/home/node/.claude/.credentials.json` | bind-mount ro |
-| `claude_config_path/{subfolder}` | `/home/node/.claude/{subfolder}` | **copied** at init |
+| `claude_config_path/*` | `/home/node/.claude/` | **copied** at init |
 | `~/.bash_histories/{container}` | `/home/node/.bash_history` | read-write |
 | Named volumes (language-specific) | `/home/node/.{sdk}/` | read-write |
 
-Claude config subfolders (`agents`, `conventions`, `output-styles`, `skills`)
-are **copied** into the container at `claudebox init`, not bind-mounted. The
-container owns its copy and can modify it. Run `claudebox refresh` to re-copy
-from the host when the source changes. Credentials and settings remain
-bind-mounted (read-only) because the container must not modify them.
+Everything in `claude_config_path` is **copied** into the container's
+`/home/node/.claude/` at `claudebox init`. Existing files are not cleared, but
+conflicts are overwritten. The container owns its copy and can modify it. Run
+`claudebox refresh` to re-copy from the host when the source changes.
 
 ### Language Detection
 
@@ -101,7 +103,7 @@ All other outbound connections are blocked.
 ### API Key
 
 If `ANTHROPIC_API_KEY` is set in the host environment, it is passed into the
-container. Otherwise Claude Code uses `~/.claude/.credentials.json`.
+container.
 
 ---
 
@@ -140,6 +142,5 @@ claudebox/
 | `Docker is not running` | Start Docker and try again |
 | `No container found` | Run `claudebox init` first |
 | Container already exists | Run `claudebox` to resume, or `claudebox destroy` then `init` |
-| Missing credentials warning | Run `claude` once on the host to create `~/.claude/.credentials.json` |
 | Claude config not visible in container | Run `claudebox refresh` to re-copy from host |
 | `claudebox.ps1` can't find claudebox.sh | Run `bash install.sh` in WSL first |

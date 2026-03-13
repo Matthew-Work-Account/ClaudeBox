@@ -57,31 +57,14 @@ cb_copy_claude_config() {
         return 0
     fi
 
-    local copied=0
-    local failed=0
-
-    for subfolder in agents conventions output-styles skills; do
-        local host_path="${claude_config_path}/${subfolder}"
-        if [[ ! -d "$host_path" ]]; then
-            continue
-        fi
-
-        if docker exec "$container_name" mkdir -p "/home/node/.claude/${subfolder}" 2>/dev/null \
-            && docker cp "${host_path}/." "${container_name}:/home/node/.claude/${subfolder}" 2>/dev/null \
-            && docker exec "$container_name" chown -R node:node "/home/node/.claude/${subfolder}" 2>/dev/null; then
-            echo "Copied claude config subfolder: ${subfolder}"
-            (( copied++ )) || true
-        else
-            echo "Warning: Failed to copy claude config subfolder: ${subfolder}" >&2
-            (( failed++ )) || true
-        fi
-    done
-
-    if [[ $copied -gt 0 ]]; then
-        echo "Claude config: ${copied} subfolder(s) copied."
-    fi
-
-    if [[ $failed -gt 0 ]]; then
+    # Copy everything in claude_config_path into /home/node/.claude/
+    # Overwrites conflicts but does not clear existing files.
+    if docker exec "$container_name" mkdir -p "/home/node/.claude" 2>/dev/null \
+        && docker cp "${claude_config_path}/." "${container_name}:/home/node/.claude/" 2>/dev/null \
+        && docker exec "$container_name" chown -R node:node "/home/node/.claude" 2>/dev/null; then
+        echo "Claude config copied from: ${claude_config_path}"
+    else
+        echo "Warning: Failed to copy claude config from '${claude_config_path}'" >&2
         return 1
     fi
 
@@ -138,24 +121,6 @@ cmd_init() {
 
     # Project directory (read-write)
     mount_args+=(-v "${cwd}:/workspace/${cwd_leaf}")
-
-    # Claude credentials
-    local claude_dir="${HOME}/.claude"
-    mkdir -p "$claude_dir"
-
-    local settings_file="${claude_dir}/settings.json"
-    if [[ -f "$settings_file" ]]; then
-        mount_args+=(-v "${settings_file}:/home/node/.claude/settings.json:ro")
-    else
-        echo "Warning: No settings.json found at ${settings_file}" >&2
-    fi
-
-    local credentials_file="${claude_dir}/.credentials.json"
-    if [[ -f "$credentials_file" ]]; then
-        mount_args+=(-v "${credentials_file}:/home/node/.claude/.credentials.json:ro")
-    else
-        echo "Warning: No .credentials.json found at ${credentials_file}" >&2
-    fi
 
     # Bash history persistence
     local history_dir="${HOME}/.bash_histories"
@@ -490,8 +455,9 @@ USAGE:
     claudebox help                     Show this help message
 
 SUPPORTED LANGUAGES:
-    dotnet, node, python, go, rust, java
+    dotnet, node, python, go, rust, java, none
     Auto-detected from project files, or set in config.
+    Use "none" for projects that don't need language-specific setup.
 
 CONTAINER NAMING:
     Containers are named claudebox-{dirname}-{hash4} based on your
@@ -500,7 +466,7 @@ CONTAINER NAMING:
 PREREQUISITES:
     * Docker running
     * jq installed on host
-    * Claude Code login (~/.claude/.credentials.json)
+    * claude_config_path set in config (optional, for Claude Code settings)
 HELP
 }
 

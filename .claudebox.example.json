@@ -2,10 +2,10 @@
   "_comment": "ClaudeBox project-level configuration. Place as .claudebox.json in your project root.",
 
   "language": "auto",
-  "_comment_language": "Language override. Options: auto, dotnet, node, python, go, rust, java. Default: auto (detected from project files).",
+  "_comment_language": "Language override. Options: auto, none, dotnet, node, python, go, rust, java. Default: auto (detected from project files). Use 'none' for no language-specific setup.",
 
   "claude_config_path": "",
-  "_comment_claude_config_path": "Path to a claude config repo (e.g., ~/structured-claude-config). Subfolders agents/, conventions/, output-styles/, skills/ are mounted read-only into the container. Empty = disabled.",
+  "_comment_claude_config_path": "Path to a claude config directory (e.g., ~/structured-claude-config). Everything inside is copied into the container's ~/.claude/ at init. Conflicts are overwritten; existing files are preserved. Empty = disabled.",
 
   "extra_domains": ["custom-registry.example.com"],
   "_comment_extra_domains": "Additional domains to allow through the container firewall. Appended to language-specific domains.",

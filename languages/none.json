@@ -1,0 +1,10 @@
+{
+  "name": "none",
+  "markers": [],
+  "domains": [],
+  "suffixes": [],
+  "volumes": {},
+  "apt_deps": [],
+  "install_commands": [],
+  "env": {}
+}

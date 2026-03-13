@@ -32,6 +32,7 @@ cb_run_wizard() {
     # Language preference
     echo "Language preference:"
     echo "  auto  - Auto-detect from project files (recommended)"
+    echo "  none  - No language-specific setup"
     echo "  dotnet, node, python, go, rust, java - Force specific language"
     echo ""
     read -rp "Language [${existing_language:-auto}]: " language
