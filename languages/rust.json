@@ -1,0 +1,15 @@
+{
+  "name": "rust",
+  "markers": ["Cargo.toml"],
+  "domains": ["static.rust-lang.org", "crates.io", "static.crates.io", "index.crates.io"],
+  "suffixes": ["rust-lang.org", "crates.io"],
+  "volumes": {
+    "claudebox-cargo": "/home/node/.cargo",
+    "claudebox-rustup": "/home/node/.rustup"
+  },
+  "apt_deps": ["build-essential"],
+  "install_commands": ["curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path"],
+  "env": {
+    "PATH": "/home/node/.cargo/bin:${PATH}"
+  }
+}

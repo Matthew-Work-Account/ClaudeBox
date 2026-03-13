@@ -1,0 +1,16 @@
+{
+  "name": "dotnet",
+  "markers": ["*.sln", "*.slnx", "*.csproj"],
+  "domains": ["nuget.org", "api.nuget.org", "www.nuget.org", "globalcdn.nuget.org", "aka.ms", "builds.dotnet.microsoft.com", "dc.services.visualstudio.com"],
+  "suffixes": ["azureedge.net", "blob.core.windows.net", "dot.net", "microsoft.com", "nuget.org"],
+  "volumes": {
+    "claudebox-dotnet": "/home/node/.dotnet",
+    "claudebox-nuget": "/home/node/.nuget/packages"
+  },
+  "apt_deps": ["libicu-dev"],
+  "install_commands": ["install-dotnet.sh"],
+  "env": {
+    "DOTNET_ROOT": "/home/node/.dotnet",
+    "DOTNET_INSTALL_DIR": "/home/node/.dotnet"
+  }
+}

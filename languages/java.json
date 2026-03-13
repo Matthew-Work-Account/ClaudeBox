@@ -1,0 +1,13 @@
+{
+  "name": "java",
+  "markers": ["pom.xml", "build.gradle", "build.gradle.kts"],
+  "domains": ["repo1.maven.org", "plugins.gradle.org", "services.gradle.org", "downloads.gradle-dn.com"],
+  "suffixes": ["maven.org", "gradle.org"],
+  "volumes": {
+    "claudebox-maven": "/home/node/.m2",
+    "claudebox-gradle": "/home/node/.gradle"
+  },
+  "apt_deps": ["default-jdk"],
+  "install_commands": [],
+  "env": {}
+}

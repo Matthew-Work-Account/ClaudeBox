@@ -1,0 +1,26 @@
+{
+  "_comment": "ClaudeBox project-level configuration. Place as .claudebox.json in your project root.",
+
+  "language": "auto",
+  "_comment_language": "Language override. Options: auto, dotnet, node, python, go, rust, java. Default: auto (detected from project files).",
+
+  "claude_config_path": "",
+  "_comment_claude_config_path": "Path to a claude config repo (e.g., ~/structured-claude-config). Subfolders agents/, conventions/, output-styles/, skills/ are mounted read-only into the container. Empty = disabled.",
+
+  "extra_domains": ["custom-registry.example.com"],
+  "_comment_extra_domains": "Additional domains to allow through the container firewall. Appended to language-specific domains.",
+
+  "extra_suffixes": ["example.com"],
+  "_comment_extra_suffixes": "Domain suffixes for wildcard firewall matching. Any subdomain of these is allowed.",
+
+  "extra_volumes": {
+    "my-cache-vol": "/home/node/.cache/custom"
+  },
+  "_comment_extra_volumes": "Additional named Docker volumes to mount. Key = volume name, value = mount path.",
+
+  "extra_apt_packages": ["vim"],
+  "_comment_extra_apt_packages": "Additional apt packages to install in the container.",
+
+  "extra_commands": ["pip3 install --break-system-packages pydantic"],
+  "_comment_extra_commands": "Shell commands to run after language setup. Runs as the node user."
+}

@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# install.sh -- ClaudeBox installer
+# Installs ClaudeBox to ~/.local/share/claudebox/ (CLAUDEBOX_HOME) and
+# creates a thin launcher at ~/.local/bin/claudebox.
+# Idempotent: overwrites existing install, skips PATH if already configured.
+set -euo pipefail
+
+CLAUDEBOX_HOME="${HOME}/.local/share/claudebox"
+LAUNCHER_DIR="${HOME}/.local/bin"
+CONFIG_DIR="${HOME}/.claudebox"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+echo "ClaudeBox Installer"
+echo "==================="
+
+# --- Check for old sed-patched layout ---
+old_files_found=false
+for old_path in \
+    "${LAUNCHER_DIR}/claudebox-lib" \
+    "${LAUNCHER_DIR}/claudebox-languages" \
+    "${LAUNCHER_DIR}/claudebox-devcontainer"; do
+    if [[ -e "$old_path" ]]; then
+        old_files_found=true
+        break
+    fi
+done
+
+if $old_files_found; then
+    echo ""
+    echo "NOTE: Old ClaudeBox install detected in ${LAUNCHER_DIR}/."
+    echo "      The following directories are no longer needed and can be removed:"
+    for old_path in \
+        "${LAUNCHER_DIR}/claudebox-lib" \
+        "${LAUNCHER_DIR}/claudebox-languages" \
+        "${LAUNCHER_DIR}/claudebox-devcontainer"; do
+        [[ -e "$old_path" ]] && echo "        rm -rf ${old_path}"
+    done
+    echo ""
+fi
+
+# --- Create directories ---
+mkdir -p "$CLAUDEBOX_HOME"
+mkdir -p "$LAUNCHER_DIR"
+mkdir -p "$CONFIG_DIR"
+
+# --- Copy files into CLAUDEBOX_HOME ---
+echo "Installing ClaudeBox to ${CLAUDEBOX_HOME}..."
+cp "${SCRIPT_DIR}/claudebox.sh" "${CLAUDEBOX_HOME}/claudebox.sh"
+chmod +x "${CLAUDEBOX_HOME}/claudebox.sh"
+
+cp -r "${SCRIPT_DIR}/lib" "${CLAUDEBOX_HOME}/"
+cp -r "${SCRIPT_DIR}/languages" "${CLAUDEBOX_HOME}/"
+cp -r "${SCRIPT_DIR}/.devcontainer" "${CLAUDEBOX_HOME}/"
+
+# --- Create thin launcher ---
+echo "Creating launcher at ${LAUNCHER_DIR}/claudebox..."
+# Unquoted heredoc so ~ expands at creation time
+cat > "${LAUNCHER_DIR}/claudebox" <<LAUNCHER
+#!/usr/bin/env bash
+export CLAUDEBOX_HOME=~/.local/share/claudebox
+exec "\${CLAUDEBOX_HOME}/claudebox.sh" "\$@"
+LAUNCHER
+chmod +x "${LAUNCHER_DIR}/claudebox"
+
+# --- PATH setup ---
+add_to_path() {
+    local rc_file="$1"
+    if [[ -f "$rc_file" ]]; then
+        if ! grep -q '\.local/bin' "$rc_file" 2>/dev/null; then
+            echo "" >> "$rc_file"
+            echo '# Added by ClaudeBox installer' >> "$rc_file"
+            echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "$rc_file"
+            echo "Added ~/.local/bin to PATH in ${rc_file}"
+        else
+            echo "PATH already configured in ${rc_file}"
+        fi
+    fi
+}
+
+current_shell=$(basename "${SHELL:-/bin/bash}")
+case "$current_shell" in
+    zsh)
+        add_to_path "${HOME}/.zshrc"
+        ;;
+    bash)
+        add_to_path "${HOME}/.bashrc"
+        ;;
+    *)
+        [[ -f "${HOME}/.bashrc" ]] && add_to_path "${HOME}/.bashrc"
+        [[ -f "${HOME}/.zshrc" ]] && add_to_path "${HOME}/.zshrc"
+        ;;
+esac
+
+echo ""
+echo "Installation complete!"
+echo ""
+echo "To get started:"
+echo "  1. Restart your shell or run: source ~/.bashrc (or ~/.zshrc)"
+echo "  2. Navigate to a project directory"
+echo "  3. Run: claudebox init"
+echo ""
+echo "On first run, claudebox will guide you through configuration."
+echo "You can also run 'claudebox config' to configure at any time."
+echo ""
+echo "Windows PowerShell users:"
+echo "  Copy claudebox.ps1 to a directory on your PowerShell PATH,"
+echo "  or add the repo directory to your PATH, so 'claudebox' resolves"
+echo "  from PowerShell via the WSL shim."

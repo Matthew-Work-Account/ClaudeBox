@@ -1,0 +1,16 @@
+{
+  "name": "go",
+  "markers": ["go.mod"],
+  "domains": ["proxy.golang.org", "sum.golang.org", "storage.googleapis.com"],
+  "suffixes": ["golang.org"],
+  "volumes": {
+    "claudebox-gopath": "/home/node/go",
+    "claudebox-gocache": "/home/node/.cache/go-build"
+  },
+  "apt_deps": [],
+  "install_commands": ["curl -fsSL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz | tar -C /home/node -xzf -"],
+  "env": {
+    "GOPATH": "/home/node/go",
+    "PATH": "/home/node/go/bin:/home/node/go/bin:${PATH}"
+  }
+}

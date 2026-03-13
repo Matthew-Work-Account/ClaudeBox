@@ -1,0 +1,12 @@
+{
+  "name": "python",
+  "markers": ["requirements.txt", "setup.py", "pyproject.toml", "Pipfile"],
+  "domains": ["pypi.org", "files.pythonhosted.org"],
+  "suffixes": ["pypi.org", "pythonhosted.org"],
+  "volumes": {
+    "claudebox-pip": "/home/node/.cache/pip"
+  },
+  "apt_deps": [],
+  "install_commands": [],
+  "env": {}
+}

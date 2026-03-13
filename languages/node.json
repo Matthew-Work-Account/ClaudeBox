@@ -1,0 +1,12 @@
+{
+  "name": "node",
+  "markers": ["package.json"],
+  "domains": ["registry.npmjs.org", "registry.yarnpkg.com", "npmjs.org"],
+  "suffixes": [],
+  "volumes": {
+    "claudebox-npm": "/home/node/.npm"
+  },
+  "apt_deps": [],
+  "install_commands": [],
+  "env": {}
+}
