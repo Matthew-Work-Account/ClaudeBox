@@ -82,13 +82,13 @@ if [[ -n "$INSTALL_CMDS" ]]; then
     done <<< "$INSTALL_CMDS"
 fi
 
-# --- Run extra commands (as node user) ---
+# --- Run extra commands (as root, with node env sourced) ---
 EXTRA_CMDS=$(jq -r '.extra_commands[]?' "$PROVIDER_JSON")
 if [[ -n "$EXTRA_CMDS" ]]; then
     echo "Running extra commands..."
     while IFS= read -r cmd; do
         [[ -z "$cmd" ]] && continue
-        su -s /bin/bash -c "source ~/.env.sh 2>/dev/null; $cmd" node
+        bash -c "source /home/node/.env.sh 2>/dev/null; $cmd"
     done <<< "$EXTRA_CMDS"
 fi
 
