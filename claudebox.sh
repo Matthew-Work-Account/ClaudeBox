@@ -465,7 +465,7 @@ cmd_upgrade() {
 
     local tmpdir
     tmpdir=$(mktemp -d)
-    trap 'rm -rf "$tmpdir"' EXIT
+    trap 'rm -rf "'"$tmpdir"'"' EXIT
 
     # Build tarball URL from the repo URL (works for GitHub HTTPS URLs)
     local tarball_url="${repo_url%.git}/archive/refs/heads/main.tar.gz"
