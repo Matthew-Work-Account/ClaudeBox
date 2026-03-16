@@ -75,9 +75,11 @@ cb_copy_claude_config() {
 
 cmd_init() {
     local rebuild=false
+    local no_start=false
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --rebuild) rebuild=true; shift ;;
+            --no-start) no_start=true; shift ;;
             *) echo "Unknown option: $1" >&2; exit 1 ;;
         esac
     done
@@ -184,12 +186,14 @@ cmd_init() {
         --argjson lang "$(cat "$lang_file")" \
         --argjson extra_commands "$(jq '.extra_commands // []' "$CB_MERGED_CONFIG")" \
         --argjson extra_apt "$(jq '.extra_apt_packages // []' "$CB_MERGED_CONFIG")" \
+        --argjson extra_volumes "$(jq '.extra_volumes // {}' "$CB_MERGED_CONFIG")" \
         '{
             name: $lang.name,
             apt_deps: ($lang.apt_deps + $extra_apt),
             install_commands: $lang.install_commands,
             env: $lang.env,
-            extra_commands: $extra_commands
+            extra_commands: $extra_commands,
+            volumes: (($lang.volumes // {}) + $extra_volumes)
         }')
 
     echo "$provider_json" | docker exec -i "$container_name" tee /tmp/claudebox-provider.json > /dev/null
@@ -205,9 +209,13 @@ cmd_init() {
     # Copy claude config subfolders into container
     cb_copy_claude_config "$container_name"
 
-    # Attach shell as node user
-    echo "Attaching to container..."
-    docker exec -it --user node -w "/workspace/${cwd_leaf}" "$container_name" zsh
+    # Attach shell as node user (unless --no-start was passed)
+    if $no_start; then
+        echo "Container '${container_name}' is ready. Run 'claudebox' to attach."
+    else
+        echo "Attaching to container..."
+        docker exec -it --user node -w "/workspace/${cwd_leaf}" "$container_name" zsh
+    fi
 }
 
 # --- Subcommand: resume (default) ---
@@ -435,6 +443,53 @@ cmd_config() {
     fi
 }
 
+# --- Subcommand: upgrade ---
+
+cmd_upgrade() {
+    local repo_url="${1:-}"
+
+    # Try saved repo URL if none provided
+    if [[ -z "$repo_url" && -f "${CLAUDEBOX_HOME}/.repo-url" ]]; then
+        repo_url=$(cat "${CLAUDEBOX_HOME}/.repo-url")
+    fi
+
+    if [[ -z "$repo_url" ]]; then
+        echo "Error: No repo URL found. Pass it explicitly:" >&2
+        echo "  claudebox upgrade <repo-url>" >&2
+        echo "" >&2
+        echo "The URL is saved automatically on future installs." >&2
+        exit 1
+    fi
+
+    echo "Upgrading ClaudeBox from ${repo_url}..."
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    # Build tarball URL from the repo URL (works for GitHub HTTPS URLs)
+    local tarball_url="${repo_url%.git}/archive/refs/heads/main.tar.gz"
+
+    local tarball_file="${tmpdir}/claudebox.tar.gz"
+    if ! curl -fsSL -o "$tarball_file" "$tarball_url"; then
+        echo "Error: Failed to download tarball from ${tarball_url}" >&2
+        echo "You can also pass a repo URL directly: claudebox upgrade <repo-url>" >&2
+        exit 1
+    fi
+
+    if ! tar -xzf "$tarball_file" --strip-components=1 -C "$tmpdir"; then
+        echo "Error: Failed to extract archive." >&2
+        exit 1
+    fi
+
+    echo "Running installer..."
+    bash "${tmpdir}/install.sh"
+
+    echo ""
+    echo "ClaudeBox upgraded successfully."
+    echo "Restart your shell or run: source ~/.bashrc (or ~/.zshrc)"
+}
+
 # --- Subcommand: help ---
 
 cmd_help() {
@@ -442,7 +497,9 @@ cmd_help() {
 ClaudeBox - Run Claude Code in a sandboxed Docker container
 
 USAGE:
-    claudebox init [--rebuild]         Create a new container for the current directory
+    claudebox init [--rebuild] [--no-start]
+                                       Create a new container for the current directory
+                                       --no-start: provision only, don't attach a shell
     claudebox                          Resume (reconnect to) an existing container
     claudebox stop                     Stop the container
     claudebox destroy                  Remove the container entirely
@@ -452,6 +509,7 @@ USAGE:
                                        Remove one or all references from the container
     claudebox refresh                  Re-copy claude config subfolders into the running container
     claudebox config                   Run the configuration wizard
+    claudebox upgrade [<repo-url>]     Upgrade ClaudeBox to the latest version from git
     claudebox help                     Show this help message
 
 SUPPORTED LANGUAGES:
@@ -485,6 +543,7 @@ case "$subcommand" in
     prune)   cmd_prune "$@" ;;
     refresh) cmd_refresh ;;
     config)  cmd_config ;;
+    upgrade) cmd_upgrade "$@" ;;
     help)    cmd_help ;;
     "")      cmd_resume ;;
     *)       echo "Unknown command: ${subcommand}. Run 'claudebox help' for usage." >&2; exit 1 ;;

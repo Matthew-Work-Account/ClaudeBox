@@ -48,6 +48,7 @@ claudebox refresh        # Re-copy claude config into running container
 claudebox ref <dir>      # Copy host directory in as a read-only reference
 claudebox prune [<name>] # Remove references
 claudebox config         # Run configuration wizard
+claudebox upgrade        # Upgrade ClaudeBox to latest from git
 ```
 
 ---

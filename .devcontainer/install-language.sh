@@ -53,6 +53,19 @@ for profile in /home/node/.bashrc /home/node/.zshrc; do
     fi
 done
 
+# --- Fix ownership of named volume mounts ---
+# Named volumes are created by Docker as root; chown them so the node user can write.
+VOL_PATHS=$(jq -r '.volumes // {} | values[]' "$PROVIDER_JSON")
+if [[ -n "$VOL_PATHS" ]]; then
+    while IFS= read -r vpath; do
+        [[ -z "$vpath" ]] && continue
+        if [[ -d "$vpath" ]]; then
+            echo "Fixing ownership: ${vpath}"
+            chown -R node:node "$vpath"
+        fi
+    done <<< "$VOL_PATHS"
+fi
+
 # --- Run install commands (as node user) ---
 INSTALL_CMDS=$(jq -r '.install_commands[]?' "$PROVIDER_JSON")
 if [[ -n "$INSTALL_CMDS" ]]; then

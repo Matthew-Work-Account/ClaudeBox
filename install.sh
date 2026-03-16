@@ -89,6 +89,14 @@ cp -r "${SCRIPT_DIR}/lib" "${CLAUDEBOX_HOME}/"
 cp -r "${SCRIPT_DIR}/languages" "${CLAUDEBOX_HOME}/"
 cp -r "${SCRIPT_DIR}/.devcontainer" "${CLAUDEBOX_HOME}/"
 
+# --- Save repo URL for upgrades ---
+repo_url=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)
+if [[ -z "$repo_url" ]]; then
+    repo_url="https://github.com/Matthew-Work-Account/ClaudeBox"
+fi
+echo "$repo_url" > "${CLAUDEBOX_HOME}/.repo-url"
+echo "Saved repo URL for future upgrades: ${repo_url}"
+
 # --- Create thin launcher ---
 echo "Creating launcher at ${LAUNCHER_DIR}/claudebox..."
 # Unquoted heredoc so ~ expands at creation time
