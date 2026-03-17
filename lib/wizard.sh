@@ -42,7 +42,7 @@ cb_run_wizard() {
     echo ""
     echo "Claude config path (optional):"
     echo "  Path to a claude config repo (e.g., structured-claude-config)"
-    echo "  with agents/, conventions/, output-styles/, skills/ subfolders."
+    echo "  All contents of this directory will be copied into the container's .claude/ directory."
     echo "  Leave empty to skip."
     echo ""
     read -rp "Claude config path [${existing_claude_config_path}]: " claude_config_path

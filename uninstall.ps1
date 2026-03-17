@@ -25,6 +25,17 @@ if (Test-Path $InstallDir) {
     Write-Host "No install found at $InstallDir (already removed)"
 }
 
+# --- Step 1b: Remove from User PATH ---
+$currentUserPath = [Environment]::GetEnvironmentVariable('PATH', 'User')
+$pathParts = ($currentUserPath -split ';') | Where-Object { $_ -ne '' -and $_ -ne $InstallDir }
+$newPath = $pathParts -join ';'
+if ($newPath -ne $currentUserPath) {
+    [Environment]::SetEnvironmentVariable('PATH', $newPath, 'User')
+    Write-Host "Removed $InstallDir from User PATH"
+} else {
+    Write-Host "$InstallDir was not in User PATH"
+}
+
 # --- Step 2: Remove claudebox function from profile ---
 if (Test-Path $ProfilePath) {
     $lines = Get-Content $ProfilePath
@@ -45,9 +56,9 @@ try {
     $wslStatus = wsl.exe --status 2>&1
     if ($LASTEXITCODE -eq 0) {
         Write-Host "Removing WSL install..."
-        wsl.exe bash -c "rm -rf ~/.local/share/claudebox && rm -f ~/.local/bin/claudebox"
+        wsl.exe bash -c "rm -rf ~/.local/share/claudebox; rm -f ~/.local/bin/claudebox; if [ -f ~/.bashrc ]; then sed -i '/# Added by ClaudeBox installer/{N;d}' ~/.bashrc; echo cleaned .bashrc; fi; if [ -f ~/.zshrc ]; then sed -i '/# Added by ClaudeBox installer/{N;d}' ~/.zshrc; echo cleaned .zshrc; fi"
         if ($LASTEXITCODE -eq 0) {
-            Write-Host "Removed ~/.local/share/claudebox and ~/.local/bin/claudebox from WSL"
+            Write-Host "Removed ~/.local/share/claudebox, ~/.local/bin/claudebox, and PATH entries from WSL"
         }
     }
 } catch {
@@ -57,10 +68,20 @@ try {
 
 # --- Note about config ---
 Write-Host ""
-Write-Host "Note: Your config at ~/.claudebox/ (in WSL) was NOT removed." -ForegroundColor Yellow
-Write-Host "To remove it: wsl bash -c 'rm -rf ~/.claudebox'" -ForegroundColor Yellow
+$configPrompt = Read-Host "Remove WSL config directory ~/.claudebox/? [y/N]"
+if ($configPrompt -match '^[Yy]') {
+    try {
+        wsl.exe bash -c "rm -rf ~/.claudebox"
+        Write-Host "Removed ~/.claudebox/" -ForegroundColor Green
+    } catch {
+        Write-Host "Could not remove ~/.claudebox/ -- remove it manually in WSL." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Config at ~/.claudebox/ (in WSL) was NOT removed." -ForegroundColor Yellow
+    Write-Host "To remove it manually: wsl bash -c 'rm -rf ~/.claudebox'" -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "Docker containers and volumes were NOT removed." -ForegroundColor Yellow
-Write-Host "To clean up: docker ps -a --filter name=claudebox- | docker rm -f" -ForegroundColor Yellow
+Write-Host "To clean up: docker ps -a --filter name=claudebox- | xargs docker rm -f" -ForegroundColor Yellow
 Write-Host ""
 Write-Host "Uninstall complete. Restart PowerShell to finish." -ForegroundColor Green

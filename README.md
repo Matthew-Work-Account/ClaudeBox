@@ -28,14 +28,22 @@ bash install.sh
 Installs to `~/.local/share/claudebox/` and adds a launcher at `~/.local/bin/claudebox`.
 Restart your shell or run `source ~/.bashrc` after install.
 
-**Windows (PowerShell):**
+**Windows (PowerShell 5.1+):**
 
 ```powershell
-wsl bash -c "curl -fsSL https://raw.githubusercontent.com/Matthew-Work-Account/ClaudeBox/main/install.sh | bash"
+# Option 1: PowerShell one-liner (no git clone required)
+irm https://raw.githubusercontent.com/Matthew-Work-Account/ClaudeBox/main/install.ps1 | iex
 ```
 
-Then copy `claudebox.ps1` to a directory on your `$PATH`. It delegates to the
-WSL install via `~/.local/share/claudebox/claudebox.sh`.
+```powershell
+# Option 2: clone and install locally
+git clone https://github.com/Matthew-Work-Account/ClaudeBox.git
+cd ClaudeBox
+.\install.ps1
+```
+
+The installer copies `claudebox.ps1` to `%LOCALAPPDATA%\ClaudeBox\`, adds that
+directory to your User PATH, and runs `install.sh` in WSL to set up the bash side.
 
 ### Usage
 
