@@ -113,8 +113,13 @@ cmd_init() {
 
     # Check if container already exists
     if docker inspect "$container_name" > /dev/null 2>&1; then
-        echo "Container '${container_name}' already exists. Use 'claudebox' (no args) to resume, or 'claudebox destroy' first."
-        exit 0
+        if $rebuild; then
+            echo "Removing existing container '${container_name}'..."
+            docker rm -f "$container_name" > /dev/null
+        else
+            echo "Container '${container_name}' already exists. Use 'claudebox' (no args) to resume, or 'claudebox init --rebuild' to recreate."
+            exit 0
+        fi
     fi
 
     # --- Build docker run arguments ---
