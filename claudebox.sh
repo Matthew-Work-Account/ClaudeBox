@@ -354,6 +354,58 @@ cmd_ref() {
     echo "Reference '${ref_name}' is ready at /workspace/refs/${ref_name}."
 }
 
+# --- Subcommand: extract ---
+
+cmd_extract() {
+    local -a source_paths=()
+    local output_dir="./extractions"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --file|--folder) source_paths+=("$2"); shift 2 ;;
+            --output) output_dir="$2"; shift 2 ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    if [[ ${#source_paths[@]} -eq 0 ]]; then
+        echo "Usage: claudebox extract --file <path> [--output <dest>]" >&2
+        echo "       claudebox extract --folder <path> [--output <dest>]" >&2
+        exit 1
+    fi
+
+    local cwd
+    cwd=$(pwd)
+    local container_name
+    container_name=$(find_container_by_hash "$cwd")
+    if [[ -z "$container_name" ]]; then
+        container_name=$(get_container_name "$cwd")
+    fi
+
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || true)
+    if [[ "$status" != "running" ]]; then
+        echo "Error: Container '${container_name}' is not running." >&2
+        exit 1
+    fi
+
+    mkdir -p "$output_dir"
+
+    local path
+    for path in "${source_paths[@]}"; do
+        if ! docker exec "$container_name" test -e "$path" 2>/dev/null; then
+            echo "Error: Path not found in container: ${path}" >&2
+            exit 1
+        fi
+        echo "Extracting ${path} from container '${container_name}' to ${output_dir}..."
+        if ! docker cp "${container_name}:${path}" "${output_dir}/"; then
+            echo "Error: Failed to extract ${path}" >&2
+            exit 1
+        fi
+    done
+    echo "Done."
+}
+
 # --- Subcommand: prune ---
 
 cmd_prune() {
@@ -524,6 +576,8 @@ USAGE:
     claudebox prune [<name>] [--project <dir>] [--all]
                                        Remove one or all references from the container
     claudebox refresh                  Re-copy claude config subfolders into the running container
+    claudebox extract --file <path> [--folder <path>] [--output <dest>]
+                                       Copy files or folders from inside the container to the host
     claudebox config                   Run the configuration wizard
     claudebox upgrade [<repo-url>]     Upgrade ClaudeBox to the latest version from git
     claudebox uninstall                Uninstall ClaudeBox
@@ -559,6 +613,7 @@ case "$subcommand" in
     ref)     cmd_ref "$@" ;;
     prune)   cmd_prune "$@" ;;
     refresh) cmd_refresh ;;
+    extract) cmd_extract "$@" ;;
     config)  cmd_config ;;
     upgrade) cmd_upgrade "$@" ;;
     uninstall) cmd_uninstall ;;
