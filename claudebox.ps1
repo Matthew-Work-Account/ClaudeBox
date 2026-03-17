@@ -5,11 +5,11 @@
 .DESCRIPTION
     Thin wrapper that translates Windows paths and forwards all commands
     to the bash implementation running inside WSL. Preserves the same
-    CLI interface (init/stop/destroy/ref/prune/help/config/empty=resume).
+    CLI interface (init/stop/destroy/ref/prune/uninstall/help/config/empty=resume).
     Supports init flags: --rebuild, --no-start.
 
 .PARAMETER Subcommand
-    The command to run (init, stop, destroy, ref, prune, config, help, or empty for resume).
+    The command to run (init, stop, destroy, ref, prune, uninstall, config, help, or empty for resume).
 #>
 #Requires -Version 5.1
 [CmdletBinding()]

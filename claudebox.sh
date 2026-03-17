@@ -490,6 +490,17 @@ cmd_upgrade() {
     echo "Restart your shell or run: source ~/.bashrc (or ~/.zshrc)"
 }
 
+# --- Subcommand: uninstall ---
+
+cmd_uninstall() {
+    local uninstall_script="${CLAUDEBOX_HOME}/uninstall.sh"
+    if [[ ! -f "$uninstall_script" ]]; then
+        echo "Error: uninstall.sh not found at $uninstall_script" >&2
+        exit 1
+    fi
+    exec bash "$uninstall_script"
+}
+
 # --- Subcommand: help ---
 
 cmd_help() {
@@ -510,6 +521,7 @@ USAGE:
     claudebox refresh                  Re-copy claude config subfolders into the running container
     claudebox config                   Run the configuration wizard
     claudebox upgrade [<repo-url>]     Upgrade ClaudeBox to the latest version from git
+    claudebox uninstall                Uninstall ClaudeBox
     claudebox help                     Show this help message
 
 SUPPORTED LANGUAGES:
@@ -544,6 +556,7 @@ case "$subcommand" in
     refresh) cmd_refresh ;;
     config)  cmd_config ;;
     upgrade) cmd_upgrade "$@" ;;
+    uninstall) cmd_uninstall ;;
     help)    cmd_help ;;
     "")      cmd_resume ;;
     *)       echo "Unknown command: ${subcommand}. Run 'claudebox help' for usage." >&2; exit 1 ;;

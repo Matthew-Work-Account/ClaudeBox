@@ -85,6 +85,9 @@ echo "Installing ClaudeBox to ${CLAUDEBOX_HOME}..."
 cp "${SCRIPT_DIR}/claudebox.sh" "${CLAUDEBOX_HOME}/claudebox.sh"
 chmod +x "${CLAUDEBOX_HOME}/claudebox.sh"
 
+cp "${SCRIPT_DIR}/uninstall.sh" "${CLAUDEBOX_HOME}/uninstall.sh"
+chmod +x "${CLAUDEBOX_HOME}/uninstall.sh"
+
 cp -r "${SCRIPT_DIR}/lib" "${CLAUDEBOX_HOME}/"
 cp -r "${SCRIPT_DIR}/languages" "${CLAUDEBOX_HOME}/"
 cp -r "${SCRIPT_DIR}/.devcontainer" "${CLAUDEBOX_HOME}/"
