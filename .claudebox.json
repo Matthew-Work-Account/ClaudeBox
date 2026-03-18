@@ -1,0 +1,9 @@
+{
+  "language": "none",
+  "claude_config_path": "~/.claude/ClaudeBoxConfig",
+  "extra_domains": [],
+  "extra_suffixes": [],
+  "extra_volumes": {},
+  "extra_apt_packages": ["shellcheck"],
+  "extra_commands": []
+}

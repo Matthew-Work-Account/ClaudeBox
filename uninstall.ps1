@@ -38,8 +38,8 @@ if ($newPath -ne $currentUserPath) {
 
 # --- Step 2: Remove claudebox function from profile ---
 if (Test-Path $ProfilePath) {
-    $lines = Get-Content $ProfilePath
-    $filtered = $lines | Where-Object { $_ -notmatch '^\s*function claudebox\s' }
+    $lines = @(Get-Content $ProfilePath)
+    $filtered = @($lines | Where-Object { $_ -notmatch '^\s*function claudebox\s' })
     if ($filtered.Count -lt $lines.Count) {
         Set-Content -Path $ProfilePath -Value $filtered
         Write-Host "Removed claudebox function from $ProfilePath"

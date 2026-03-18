@@ -601,23 +601,26 @@ HELP
 
 # --- Main dispatch ---
 
-check_docker
-
 subcommand="${1:-}"
 shift || true
 
 case "$subcommand" in
-    init)    cmd_init "$@" ;;
-    stop)    cmd_stop ;;
-    destroy) cmd_destroy ;;
-    ref)     cmd_ref "$@" ;;
-    prune)   cmd_prune "$@" ;;
-    refresh) cmd_refresh ;;
-    extract) cmd_extract "$@" ;;
+    help)    cmd_help ;;
     config)  cmd_config ;;
     upgrade) cmd_upgrade "$@" ;;
     uninstall) cmd_uninstall ;;
-    help)    cmd_help ;;
-    "")      cmd_resume ;;
-    *)       echo "Unknown command: ${subcommand}. Run 'claudebox help' for usage." >&2; exit 1 ;;
+    *)
+        check_docker
+        case "$subcommand" in
+            init)    cmd_init "$@" ;;
+            stop)    cmd_stop ;;
+            destroy) cmd_destroy ;;
+            ref)     cmd_ref "$@" ;;
+            prune)   cmd_prune "$@" ;;
+            refresh) cmd_refresh ;;
+            extract) cmd_extract "$@" ;;
+            "")      cmd_resume ;;
+            *)       echo "Unknown command: ${subcommand}. Run 'claudebox help' for usage." >&2; exit 1 ;;
+        esac
+        ;;
 esac
