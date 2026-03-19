@@ -82,6 +82,36 @@ if [[ -n "$INSTALL_CMDS" ]]; then
     done <<< "$INSTALL_CMDS"
 fi
 
+# --- Inject NuGet.Config for dotnet containers with seed cache ---
+# Runs only when the read-only bind mount is present at /home/node/.nuget-cache-seed (ref: DL-005).
+# Writes to user-scope path (/home/node/.nuget/NuGet/NuGet.Config); dotnet CLI
+# reads this location without extra flags (ref: DL-003).
+# Machine-wide /etc/NuGet/NuGet.Config was not used: that directory is absent
+# in the base image and requires separate creation (ref: DL-003).
+# Backs up any existing file to NuGet.Config.bak before overwriting.
+if [[ "$LANG_NAME" == "dotnet" ]] && [[ -d "/home/node/.nuget-cache-seed" ]]; then
+    NUGET_CONFIG_DIR="/home/node/.nuget/NuGet"
+    NUGET_CONFIG_FILE="${NUGET_CONFIG_DIR}/NuGet.Config"
+    mkdir -p "$NUGET_CONFIG_DIR"
+    if [[ -f "$NUGET_CONFIG_FILE" ]]; then
+        echo "Warning: Existing NuGet.Config backed up to NuGet.Config.bak" >&2
+        cp "$NUGET_CONFIG_FILE" "${NUGET_CONFIG_DIR}/NuGet.Config.bak"
+    fi
+    # nuget.org retained alongside local-seed so managed packages not in the
+    # seed cache are still resolvable via the allowlisted domain.
+    cat > "$NUGET_CONFIG_FILE" <<'NUGET_CONFIG'
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="local-seed" value="/home/node/.nuget-cache-seed" />
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+  </packageSources>
+</configuration>
+NUGET_CONFIG
+    chown -R node:node "$NUGET_CONFIG_DIR"
+    echo "NuGet.Config injected with local-seed source at /home/node/.nuget-cache-seed"
+fi
+
 # --- Run extra commands (as root, with node env sourced) ---
 EXTRA_CMDS=$(jq -r '.extra_commands[]?' "$PROVIDER_JSON")
 if [[ -n "$EXTRA_CMDS" ]]; then

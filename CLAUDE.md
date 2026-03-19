@@ -77,3 +77,51 @@ Each language config opens specific domains:
 - **All containers**: github.com, api.anthropic.com, deb.debian.org
 
 Users can add more via `extra_domains` and `extra_suffixes` in config.
+
+## extra_commands Behavior
+
+Commands in `extra_commands` run **as root** during container initialization (inside `install-language.sh`), after language setup completes. The node user's environment is sourced first (`/home/node/.env.sh`), so language-specific paths (e.g. `npm`, `pip3`) are available even though the process runs as root.
+
+This is why commands in `extra_commands` can install system packages with `apt-get` or write to root-owned paths — they execute before the container hands off to the `node` user. If a command in `extra_commands` fails with a permission error at runtime, it cannot be fixed by adding `sudo`; it must be placed in `extra_commands` in config and the container recreated.
+
+## Offline NuGet Packages (dotnet containers)
+
+Private NuGet feeds (e.g. Azure DevOps Artifacts) require credentials.
+ClaudeBox does not inject credentials into containers; use local package seeding
+instead.
+
+When the host directory `~/.claudebox/nuget-cache/` exists at `claudebox init`
+time, it is bind-mounted read-only at `/home/node/.nuget-cache-seed` inside the
+container, and a `NuGet.Config` is written to
+`/home/node/.nuget/NuGet/NuGet.Config` that adds it as a local package source
+alongside `nuget.org`.
+
+To seed the cache, run on the host (not inside the container):
+
+    claudebox dotnet seed-nuget-cache [--source <path>]
+    # default source: ~/.nuget/packages
+
+Re-seeding replaces the entire cache directory. The seed survives
+`claudebox destroy` because it is stored on the host, not in a Docker volume.
+
+If `dotnet restore` still fails for a private package, confirm the package is
+present in `~/.claudebox/nuget-cache/` and that the project-level `nuget.config`
+does not override package sources in a way that bypasses the local feed.
+
+**NuGet cache layout**: NuGet stores packages at
+`<package-id>/<version>/*.nupkg` inside the cache directory — `.nupkg` files
+are two levels deep, not at the root. When troubleshooting a missing package,
+look for `~/.claudebox/nuget-cache/<id>/<version>/<id>.<version>.nupkg`.
+
+**Named volume coexistence**: The `claudebox-nuget` named volume (mounted at
+`/home/node/.nuget/packages` read-write) is still present alongside the seed
+bind-mount. It holds packages dotnet downloads or extracts at container
+runtime. Do not remove the named volume from `dotnet.json`; without it,
+dotnet restore for non-seeded packages fails.
+
+**Why `~/.claudebox/nuget-cache/` and not a direct bind-mount of
+`~/.nuget/packages`?** Docker Desktop on Mac and Windows does not include the
+user's `~/.nuget/packages` in its default file-sharing scope. A direct
+bind-mount of that path silently fails on non-Linux hosts. The
+`~/.claudebox/` directory sits under the user home, which Docker Desktop
+exposes by default.

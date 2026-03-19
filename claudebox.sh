@@ -146,6 +146,16 @@ cmd_init() {
         mount_args+=(-v "${vol_name}:${vol_path}")
     done <<< "$vol_names"
 
+    # Bind-mount the host NuGet seed cache read-only when present (ref: DL-002, DL-005).
+    # Read-only prevents container writes from corrupting the seeded cache.
+    # Mount is skipped when the directory is absent; no mount args are added.
+    if [[ "$language" == "dotnet" ]]; then
+        local nuget_seed_dir="${HOME}/.claudebox/nuget-cache"
+        if [[ -d "$nuget_seed_dir" ]]; then
+            mount_args+=(-v "${nuget_seed_dir}:/home/node/.nuget-cache-seed:ro")
+        fi
+    fi
+
     # Extra volumes from config
     local extra_vols
     extra_vols=$(jq -r '.extra_volumes // {} | to_entries[] | "\(.key):\(.value)"' "$CB_MERGED_CONFIG" 2>/dev/null || true)
@@ -604,6 +614,70 @@ cmd_uninstall() {
     exec bash "$uninstall_script"
 }
 
+# --- Subcommand: dotnet ---
+
+# Dispatch table for language-scoped dotnet subcommands (ref: DL-001).
+# Keeps dotnet-specific operations out of the top-level namespace.
+cmd_dotnet() {
+    local subcmd="${1:-}"
+    shift || true
+
+    case "$subcmd" in
+        seed-nuget-cache) cmd_dotnet_seed_nuget_cache "$@" ;;
+        *)
+            echo "Unknown dotnet subcommand: ${subcmd}" >&2
+            echo "Usage: claudebox dotnet seed-nuget-cache [--source <path>]" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# Copies NuGet packages from a host directory to ~/.claudebox/nuget-cache/.
+# That directory is bind-mounted read-only into dotnet containers at init time,
+# enabling offline restore without contacting a private feed (ref: DL-004).
+#
+# Destination is cleared before copying so the cache exactly mirrors the source;
+# stale packages from prior seeds do not accumulate (ref: DL-006).
+#
+# Args:
+#   --source <path>  Host NuGet package directory (default: ~/.nuget/packages)
+cmd_dotnet_seed_nuget_cache() {
+    local source_path="${HOME}/.nuget/packages"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --source)
+                if [[ $# -lt 2 || -z "${2:-}" ]]; then
+                    echo "Error: --source requires a path argument" >&2
+                    exit 1
+                fi
+                source_path="$2"
+                shift 2
+                ;;
+            *) echo "Unknown option: $1" >&2; exit 1 ;;
+        esac
+    done
+
+    if [[ ! -d "$source_path" ]]; then
+        echo "Error: Source path does not exist: ${source_path}" >&2
+        exit 1
+    fi
+
+    if ! find "$source_path" -name '*.nupkg' -print -quit 2>/dev/null | grep -q .; then
+        echo "Error: No .nupkg files found in ${source_path}. Is this a NuGet packages cache?" >&2
+        exit 1
+    fi
+
+    local cache_dir="${HOME}/.claudebox/nuget-cache"
+    mkdir -p "$cache_dir"
+    rm -rf "${cache_dir:?}/"*
+    find "$source_path" -mindepth 1 -maxdepth 1 -exec cp -r {} "$cache_dir/" \;
+
+    local pkg_count
+    pkg_count=$(find "$cache_dir" -name '*.nupkg' | wc -l)
+    echo "NuGet cache seeded: ${pkg_count} package(s) copied to ${cache_dir}"
+}
+
 # --- Subcommand: help ---
 
 cmd_help() {
@@ -628,6 +702,9 @@ USAGE:
     claudebox upgrade [--repo <url>] [--branch <branch>]
                                        Upgrade ClaudeBox from git (default branch: main)
     claudebox uninstall                Uninstall ClaudeBox
+    claudebox dotnet seed-nuget-cache [--source <path>]
+                                       Copy NuGet packages from host into ~/.claudebox/nuget-cache/
+                                       for offline use inside dotnet containers (default source: ~/.nuget/packages)
     claudebox help                     Show this help message
 
 SUPPORTED LANGUAGES:
@@ -655,6 +732,7 @@ case "$subcommand" in
     help)    cmd_help ;;
     config)  cmd_config ;;
     upgrade) cmd_upgrade "$@" ;;
+    dotnet)  cmd_dotnet "$@" ;;
     uninstall) cmd_uninstall ;;
     *)
         check_docker
