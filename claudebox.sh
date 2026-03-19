@@ -504,6 +504,7 @@ cmd_config() {
 
 cmd_upgrade() {
     local repo_url="${1:-}"
+    local branch="${2:-}"
 
     # Try saved repo URL if none provided
     if [[ -z "$repo_url" && -f "${CLAUDEBOX_HOME}/.repo-url" ]]; then
@@ -512,26 +513,52 @@ cmd_upgrade() {
 
     if [[ -z "$repo_url" ]]; then
         echo "Error: No repo URL found. Pass it explicitly:" >&2
-        echo "  claudebox upgrade <repo-url>" >&2
+        echo "  claudebox upgrade <repo-url> [<branch>]" >&2
         echo "" >&2
         echo "The URL is saved automatically on future installs." >&2
         exit 1
     fi
 
-    echo "Upgrading ClaudeBox from ${repo_url}..."
+    # Default branch to main if not specified
+    local target_branch="${branch:-main}"
+
+    echo "Upgrading ClaudeBox from ${repo_url} (branch: ${target_branch})..."
 
     local tmpdir
     tmpdir=$(mktemp -d)
     trap 'rm -rf "'"$tmpdir"'"' EXIT
 
-    # Build tarball URL from the repo URL (works for GitHub HTTPS URLs)
-    local tarball_url="${repo_url%.git}/archive/refs/heads/main.tar.gz"
-
+    local base_url="${repo_url%.git}"
+    local tarball_url="${base_url}/archive/refs/heads/${target_branch}.tar.gz"
     local tarball_file="${tmpdir}/claudebox.tar.gz"
+
     if ! curl -fsSL -o "$tarball_file" "$tarball_url"; then
-        echo "Error: Failed to download tarball from ${tarball_url}" >&2
-        echo "You can also pass a repo URL directly: claudebox upgrade <repo-url>" >&2
-        exit 1
+        if [[ -n "$branch" ]]; then
+            echo "" >&2
+            echo "Branch '${branch}' was not found at ${tarball_url}" >&2
+            echo "" >&2
+            printf "Fall back to 'main'? [y/N] " >&2
+            local answer
+            read -r answer
+            case "$answer" in
+                [yY]|[yY][eE][sS])
+                    tarball_url="${base_url}/archive/refs/heads/main.tar.gz"
+                    echo "Falling back to 'main'..." >&2
+                    if ! curl -fsSL -o "$tarball_file" "$tarball_url"; then
+                        echo "Error: Failed to download tarball from ${tarball_url}" >&2
+                        exit 1
+                    fi
+                    ;;
+                *)
+                    echo "Upgrade cancelled." >&2
+                    exit 1
+                    ;;
+            esac
+        else
+            echo "Error: Failed to download tarball from ${tarball_url}" >&2
+            echo "You can also pass a repo URL directly: claudebox upgrade <repo-url> [<branch>]" >&2
+            exit 1
+        fi
     fi
 
     if ! tar -xzf "$tarball_file" --strip-components=1 -C "$tmpdir"; then
@@ -579,7 +606,8 @@ USAGE:
     claudebox extract --file <path> [--folder <path>] [--output <dest>]
                                        Copy files or folders from inside the container to the host
     claudebox config                   Run the configuration wizard
-    claudebox upgrade [<repo-url>]     Upgrade ClaudeBox to the latest version from git
+    claudebox upgrade [<repo-url>] [<branch>]
+                                       Upgrade ClaudeBox from git (default branch: main)
     claudebox uninstall                Uninstall ClaudeBox
     claudebox help                     Show this help message
 
