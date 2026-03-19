@@ -503,8 +503,27 @@ cmd_config() {
 # --- Subcommand: upgrade ---
 
 cmd_upgrade() {
-    local repo_url="${1:-}"
-    local branch="${2:-}"
+    local repo_url=""
+    local branch=""
+
+    # Parse flags
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --repo|--repository)
+                repo_url="${2:-}"
+                shift 2
+                ;;
+            --branch)
+                branch="${2:-}"
+                shift 2
+                ;;
+            *)
+                echo "Error: Unknown argument '$1'" >&2
+                echo "  claudebox upgrade [--repo <url>] [--branch <branch>]" >&2
+                exit 1
+                ;;
+        esac
+    done
 
     # Try saved repo URL if none provided
     if [[ -z "$repo_url" && -f "${CLAUDEBOX_HOME}/.repo-url" ]]; then
@@ -513,7 +532,7 @@ cmd_upgrade() {
 
     if [[ -z "$repo_url" ]]; then
         echo "Error: No repo URL found. Pass it explicitly:" >&2
-        echo "  claudebox upgrade <repo-url> [<branch>]" >&2
+        echo "  claudebox upgrade [--repo <url>] [--branch <branch>]" >&2
         echo "" >&2
         echo "The URL is saved automatically on future installs." >&2
         exit 1
@@ -606,7 +625,7 @@ USAGE:
     claudebox extract --file <path> [--folder <path>] [--output <dest>]
                                        Copy files or folders from inside the container to the host
     claudebox config                   Run the configuration wizard
-    claudebox upgrade [<repo-url>] [<branch>]
+    claudebox upgrade [--repo <url>] [--branch <branch>]
                                        Upgrade ClaudeBox from git (default branch: main)
     claudebox uninstall                Uninstall ClaudeBox
     claudebox help                     Show this help message
