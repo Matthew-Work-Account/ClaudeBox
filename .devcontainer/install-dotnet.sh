@@ -41,11 +41,13 @@ map_framework_to_channel() {
     fi
 }
 
+DOTNET_CMD="${DOTNET_INSTALL_DIR:-/home/node/.dotnet}/dotnet"
+
 sdk_installed() {
     local channel="$1"
     local major_minor
     major_minor=$(echo "$channel" | cut -d. -f1-2)
-    if dotnet --list-sdks 2>/dev/null | grep -q "^${major_minor}\."; then
+    if "$DOTNET_CMD" --list-sdks 2>/dev/null | grep -q "^${major_minor}\."; then
         return 0
     fi
     return 1
@@ -101,4 +103,4 @@ for channel in "${!CHANNELS_NEEDED[@]}"; do
 done
 
 echo "Done. Installed SDKs:"
-dotnet --list-sdks 2>/dev/null || echo "  (none)"
+"$DOTNET_CMD" --list-sdks 2>/dev/null || echo "  (none)"

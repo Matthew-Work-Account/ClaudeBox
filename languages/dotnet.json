@@ -11,6 +11,7 @@
   "install_commands": ["install-dotnet.sh"],
   "env": {
     "DOTNET_ROOT": "/home/node/.dotnet",
-    "DOTNET_INSTALL_DIR": "/home/node/.dotnet"
+    "DOTNET_INSTALL_DIR": "/home/node/.dotnet",
+    "PATH": "/home/node/.dotnet:/home/node/.dotnet/tools:${PATH}"
   }
 }
