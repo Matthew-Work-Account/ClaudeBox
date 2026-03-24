@@ -737,7 +737,18 @@ cmd_dotnet_seed_nuget_cache() {
     local cache_dir="${HOME}/.claudebox/nuget-cache"
     mkdir -p "$cache_dir"
     rm -rf "${cache_dir:?}/"*
-    find "$source_path" -mindepth 1 -maxdepth 1 -exec cp -r {} "$cache_dir/" \;
+
+    local total
+    total=$(find "$source_path" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    local i=0
+    while IFS= read -r entry; do
+        i=$(( i + 1 ))
+        local name
+        name=$(basename "$entry")
+        printf "\r  [%d/%d] %s" "$i" "$total" "$name"
+        cp -r "$entry" "$cache_dir/"
+    done < <(find "$source_path" -mindepth 1 -maxdepth 1 -type d)
+    echo  # newline after progress
 
     local pkg_count
     pkg_count=$(find "$cache_dir" -name '*.nupkg' | wc -l)
