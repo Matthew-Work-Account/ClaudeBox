@@ -20,7 +20,10 @@ DOTNET_INSTALL_SCRIPT="/home/node/dotnet-install.sh"
 # Download the install script if not already present
 if [[ ! -f "$DOTNET_INSTALL_SCRIPT" ]]; then
     echo "Downloading dotnet-install.sh..."
-    curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$DOTNET_INSTALL_SCRIPT"
+    if ! curl -fsSL https://dot.net/v1/dotnet-install.sh -o "$DOTNET_INSTALL_SCRIPT" 2>/dev/null; then
+        echo "Primary URL failed, trying GitHub mirror..."
+        curl -fsSL https://raw.githubusercontent.com/dotnet/install-scripts/main/src/dotnet-install.sh -o "$DOTNET_INSTALL_SCRIPT"
+    fi
     chmod +x "$DOTNET_INSTALL_SCRIPT"
 fi
 
