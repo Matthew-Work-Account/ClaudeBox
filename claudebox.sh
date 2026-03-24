@@ -11,6 +11,62 @@ source "${CLAUDEBOX_HOME}/lib/detect.sh"
 IMAGE_NAME="claudebox"
 DOCKERFILE_DIR="${CLAUDEBOX_HOME}/.devcontainer"
 
+# --- Language-specific mount hooks ---
+# Each cb_language_mounts_<lang> function receives (cwd, cwd_parent, cwd_leaf)
+# and prints "host_path:container_path[:options]" lines — one per mount.
+# cmd_init calls cb_language_mounts "$language" to collect them all.
+
+cb_language_mounts_dotnet() {
+    local cwd="$1" cwd_parent="$2" cwd_leaf="$3"
+    declare -A _seen=()
+
+    _resolve_sibling() {
+        local ref_dir="$1" raw_path="$2"
+        raw_path="${raw_path//\\//}"
+        [[ "$raw_path" != ../* ]] && return
+        local abs
+        abs=$(cd "$ref_dir" && realpath -m "$raw_path" 2>/dev/null) || return
+        local rel="${abs#${cwd_parent}/}"
+        local name="${rel%%/*}"
+        [[ -z "$name" || "$name" == "$cwd_leaf" ]] && return
+        local host="${cwd_parent}/${name}"
+        [[ ! -d "$host" ]] && return
+        [[ -n "${_seen[$name]+_}" ]] && return
+        _seen["$name"]=1
+        # :rw required: dotnet restore writes obj/project.assets.json into sibling dirs (ref: DL-002)
+        echo "${host}:/workspace/${name}:rw"
+    }
+
+    # .sln files: extract second quoted arg on Project(...) lines
+    while IFS= read -r sln; do
+        local sln_dir; sln_dir=$(dirname "$sln")
+        while IFS= read -r p; do
+            _resolve_sibling "$sln_dir" "$p"
+        # awk -F'"' field 6 = third double-quoted value = project path in Project(...) = "Name", "path", "{GUID}" format (ref: DL-001)
+        done < <(awk -F'"' '/^Project/{p=$6; if (p ~ /\.(cs|fs|vb)proj$/) print p}' "$sln" 2>/dev/null || true)
+    done < <(find "$cwd" -maxdepth 4 -name "*.sln" 2>/dev/null)
+
+    # .csproj/.fsproj/.vbproj files: extract <ProjectReference Include="..."/> paths (ref: DL-003)
+    while IFS= read -r csproj; do
+        local csproj_dir; csproj_dir=$(dirname "$csproj")
+        while IFS= read -r p; do
+            _resolve_sibling "$csproj_dir" "$p"
+        done < <(grep -oP '(?<=<ProjectReference Include=")[^"]+\.(cs|fs|vb)proj' "$csproj" 2>/dev/null || true)
+    done < <(find "$cwd" -maxdepth 4 \( -name "*.csproj" -o -name "*.fsproj" -o -name "*.vbproj" \) 2>/dev/null)
+
+    unset -f _resolve_sibling
+}
+
+cb_language_mounts() {
+    local language="$1" cwd="$2"
+    local cwd_parent; cwd_parent=$(dirname "$cwd")
+    local cwd_leaf; cwd_leaf=$(basename "$cwd")
+    local fn="cb_language_mounts_${language}"
+    if declare -f "$fn" > /dev/null 2>&1; then
+        "$fn" "$cwd" "$cwd_parent" "$cwd_leaf"
+    fi
+}
+
 # --- Utility functions ---
 
 get_container_hash() {
@@ -146,6 +202,25 @@ cmd_init() {
         mount_args+=(-v "${vol_name}:${vol_path}")
     done <<< "$vol_names"
 
+    # Bind-mount the host NuGet seed cache read-only when present (ref: DL-002, DL-005).
+    # Read-only prevents container writes from corrupting the seeded cache.
+    # Mount is skipped when the directory is absent; no mount args are added.
+    if [[ "$language" == "dotnet" ]]; then
+        local nuget_seed_dir="${HOME}/.claudebox/nuget-cache"
+        if [[ -d "$nuget_seed_dir" ]]; then
+            mount_args+=(-v "${nuget_seed_dir}:/home/node/.nuget-cache-seed:ro")
+        fi
+    fi
+
+    # Language-specific auto-mounts (e.g. dotnet sibling repo detection)
+    while IFS= read -r vol_entry; do
+        [[ -z "$vol_entry" ]] && continue
+        local host_part="${vol_entry%%:*}"
+        local rest="${vol_entry#*:}"
+        local container_part="${rest%%:*}"
+        echo "Auto-mounting: ${host_part} -> ${container_part}"
+        mount_args+=(-v "$vol_entry")
+    done < <(cb_language_mounts "$language" "$cwd")
     # Extra volumes from config
     local extra_vols
     extra_vols=$(jq -r '.extra_volumes // {} | to_entries[] | "\(.key):\(.value)"' "$CB_MERGED_CONFIG" 2>/dev/null || true)
