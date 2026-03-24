@@ -745,7 +745,7 @@ cmd_dotnet_seed_nuget_cache() {
         i=$(( i + 1 ))
         local name
         name=$(basename "$entry")
-        printf "\r  [%d/%d] %s" "$i" "$total" "$name"
+        printf "\r\033[K  [%d/%d] %s" "$i" "$total" "$name"
         cp -r "$entry" "$cache_dir/"
     done < <(find "$source_path" -mindepth 1 -maxdepth 1 -type d)
     echo  # newline after progress
