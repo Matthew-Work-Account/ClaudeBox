@@ -935,9 +935,8 @@ cmd_module_apply() {
         val=$(jq -r --arg k "$key" '.env[$k]' "$module_file")
         docker exec -u root "$container_name" bash -c '
             key="$1" val="$2"
-            if ! grep -qF "export ${key}=" /home/node/.env.sh 2>/dev/null; then
-                printf "export %s=%q\n" "$key" "$val" >> /home/node/.env.sh
-            fi
+            sed -i "/^export ${key}=/d" /home/node/.env.sh 2>/dev/null || true
+            printf "export %s=\"%s\"\n" "$key" "$val" >> /home/node/.env.sh
         ' -- "$key" "$val"
     done <<< "$env_keys"
 
