@@ -2,7 +2,7 @@
   "name": "SqlServer",
   "description": "Microsoft SQL Server client tools (sqlcmd/bcp) via mssql-tools18",
   "extra_domains": ["packages.microsoft.com"],
-  "extra_suffixes": [],
+  "extra_suffixes": ["trafficmanager.net"],
   "extra_apt_packages": ["gnupg"],
   "extra_commands": [
     "apt-get install -y gnupg",

@@ -889,6 +889,28 @@ cmd_module_apply() {
 
     echo "Applying module '${name}' to container '${container_name}'..."
 
+    # Update live firewall with any new domains/suffixes from the module
+    local mod_domains mod_suffixes
+    mod_domains=$(jq -r '.extra_domains[]?' "$module_file" 2>/dev/null || true)
+    mod_suffixes=$(jq -r '.extra_suffixes[]?' "$module_file" 2>/dev/null || true)
+    if [[ -n "$mod_domains" || -n "$mod_suffixes" ]]; then
+        echo "  [updating firewall]"
+        docker exec -u root "$container_name" bash -c '
+            while IFS= read -r domain; do
+                [[ -z "$domain" ]] && continue
+                echo "ipset=/${domain}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+                dig +short "$domain" A @127.0.0.1 > /dev/null 2>&1 || true
+            done <<< "$1"
+            while IFS= read -r suffix; do
+                [[ -z "$suffix" ]] && continue
+                echo "ipset=/.${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+                echo "ipset=/${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+                dig +short "$suffix" A @127.0.0.1 > /dev/null 2>&1 || true
+            done <<< "$2"
+            kill -HUP $(pgrep dnsmasq) 2>/dev/null || true
+        ' -- "$mod_domains" "$mod_suffixes"
+    fi
+
     # Refresh apt package lists so modules can install packages without needing apt-get update in their commands
     echo "  [apt-get update]"
     docker exec -u root "$container_name" apt-get update -qq
