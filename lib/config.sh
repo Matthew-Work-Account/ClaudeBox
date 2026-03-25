@@ -15,7 +15,7 @@ cb_load_config() {
     local local_config="${project_dir}/.claudebox.json"
 
     # Start with empty defaults
-    local base='{"language":"auto","claude_config_path":"","extra_domains":[],"extra_suffixes":[],"extra_volumes":{},"extra_apt_packages":[],"extra_commands":[],"modules":[],"extra_env":[],"env_profile":"","env_profiles":{},"default_env_profile":""}'
+    local base='{"language":"auto","claude_config_path":"","extra_domains":[],"extra_suffixes":[],"extra_volumes":{},"extra_apt_packages":[],"extra_commands":[],"modules":[],"extra_env":[],"env_profile":"","env_profiles":{},"default_env_profile":"","extra_hosts":[]}'
 
     local global_json="$base"
     if [[ -f "$global_config" ]]; then
@@ -37,7 +37,8 @@ cb_load_config() {
             .extra_apt_packages = (($g.extra_apt_packages // []) + ($l.extra_apt_packages // [])) |
             .extra_commands = (($g.extra_commands // []) + ($l.extra_commands // [])) |
             .extra_env = (($g.extra_env // []) + ($l.extra_env // [])) |
-            .modules = (($g.modules // []) + ($l.modules // []))
+            .modules = (($g.modules // []) + ($l.modules // [])) |
+            .extra_hosts = (($g.extra_hosts // []) + ($l.extra_hosts // []))
         ' <(echo "$global_json") "$local_config" > "$CB_MERGED_CONFIG"
     else
         echo "$global_json" > "$CB_MERGED_CONFIG"

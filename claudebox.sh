@@ -250,6 +250,13 @@ cmd_init() {
         env_args+=(-e "$kv")
     done < <(cb_resolve_env_profile)
 
+    # Extra hosts (hostname:ip entries injected into /etc/hosts)
+    local -a host_args=()
+    while IFS= read -r host_entry; do
+        [[ -z "$host_entry" ]] && continue
+        host_args+=(--add-host "$host_entry")
+    done < <(cb_config_get_array "extra_hosts")
+
     # Create container
     echo "Creating container '${container_name}'..."
     docker run -d \
@@ -260,6 +267,7 @@ cmd_init() {
         -w "/workspace/${cwd_leaf}" \
         "${mount_args[@]}" \
         "${env_args[@]}" \
+        "${host_args[@]}" \
         "$IMAGE_NAME" sleep infinity
 
     # --- Write config files into container ---
