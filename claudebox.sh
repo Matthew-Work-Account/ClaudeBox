@@ -907,7 +907,7 @@ cmd_module_apply() {
                 echo "ipset=/${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
                 dig +short "$suffix" A @127.0.0.1 > /dev/null 2>&1 || true
             done <<< "$2"
-            kill -HUP $(pgrep dnsmasq) 2>/dev/null || true
+            kill -HUP "$(cat /var/run/dnsmasq.pid 2>/dev/null)" 2>/dev/null || true
         ' -- "$mod_domains" "$mod_suffixes"
     fi
 
