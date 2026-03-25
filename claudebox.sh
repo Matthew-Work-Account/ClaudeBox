@@ -899,15 +899,17 @@ cmd_module_apply() {
             while IFS= read -r domain; do
                 [[ -z "$domain" ]] && continue
                 echo "ipset=/${domain}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
-                dig +short "$domain" A @127.0.0.1 > /dev/null 2>&1 || true
             done <<< "$1"
             while IFS= read -r suffix; do
                 [[ -z "$suffix" ]] && continue
                 echo "ipset=/.${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
                 echo "ipset=/${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
-                dig +short "$suffix" A @127.0.0.1 > /dev/null 2>&1 || true
             done <<< "$2"
-            kill -HUP "$(cat /var/run/dnsmasq.pid 2>/dev/null)" 2>/dev/null || true
+            # Restart dnsmasq so new ipset rules are active before apt runs
+            pid=$(cat /var/run/dnsmasq.pid 2>/dev/null || cat /run/dnsmasq.pid 2>/dev/null || echo "")
+            [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+            dnsmasq --conf-dir=/etc/dnsmasq.d 2>/dev/null
+            sleep 1
         ' -- "$mod_domains" "$mod_suffixes"
     fi
 
