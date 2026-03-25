@@ -889,6 +889,10 @@ cmd_module_apply() {
 
     echo "Applying module '${name}' to container '${container_name}'..."
 
+    # Refresh apt package lists so modules can install packages without needing apt-get update in their commands
+    echo "  [apt-get update]"
+    docker exec -u root "$container_name" apt-get update -qq
+
     # Run extra_commands
     local cmds
     cmds=$(jq -r '.extra_commands[]?' "$module_file")

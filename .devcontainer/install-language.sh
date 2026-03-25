@@ -19,14 +19,14 @@ fi
 LANG_NAME=$(jq -r '.name' "$PROVIDER_JSON")
 echo "Setting up language: ${LANG_NAME}"
 
+# --- Refresh apt package lists (always, so extra_commands and modules can install packages) ---
+apt-get update -qq
+
 # --- Install apt dependencies (as root) ---
 APT_DEPS=$(jq -r '.apt_deps[]?' "$PROVIDER_JSON")
 if [[ -n "$APT_DEPS" ]]; then
     echo "Installing apt packages..."
-    apt-get update -qq
     echo "$APT_DEPS" | xargs apt-get install -y --no-install-recommends -qq
-    apt-get clean
-    rm -rf /var/lib/apt/lists/*
     echo "Apt packages installed."
 fi
 
