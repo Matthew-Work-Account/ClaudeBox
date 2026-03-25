@@ -33,3 +33,6 @@ Desktop.ini
 
 # Claude Code
 .claude/settings.local.json
+
+# Per-project ClaudeBox config (local only)
+.claudebox.json
