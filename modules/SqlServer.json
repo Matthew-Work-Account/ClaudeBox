@@ -1,0 +1,16 @@
+{
+  "name": "SqlServer",
+  "description": "Microsoft SQL Server client tools (sqlcmd/bcp) via mssql-tools18",
+  "extra_domains": ["packages.microsoft.com"],
+  "extra_suffixes": ["trafficmanager.net"],
+  "extra_apt_packages": ["gnupg"],
+  "extra_commands": [
+    "apt-get install -y gnupg",
+    "rm -f /usr/share/keyrings/microsoft.gpg && curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | gpg --batch --no-tty --dearmor -o /usr/share/keyrings/microsoft.gpg",
+    "echo 'deb [signed-by=/usr/share/keyrings/microsoft.gpg] https://packages.microsoft.com/debian/12/prod bookworm main' > /etc/apt/sources.list.d/mssql-release.list",
+    "apt-get update && ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev"
+  ],
+  "env": {
+    "PATH": "/opt/mssql-tools18/bin:$PATH"
+  }
+}

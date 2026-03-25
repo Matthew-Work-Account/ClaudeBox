@@ -236,6 +236,27 @@ cmd_init() {
         env_args+=(-e "ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}")
     fi
 
+    # Forward extra_env vars from host environment
+    while IFS= read -r var_name; do
+        [[ -z "$var_name" ]] && continue
+        if [[ -n "${!var_name+_}" ]]; then
+            env_args+=(-e "${var_name}=${!var_name}")
+        fi
+    done < <(cb_config_get_array "extra_env")
+
+    # Inject active env profile vars
+    while IFS= read -r kv; do
+        [[ -z "$kv" ]] && continue
+        env_args+=(-e "$kv")
+    done < <(cb_resolve_env_profile)
+
+    # Extra hosts (hostname:ip entries injected into /etc/hosts)
+    local -a host_args=()
+    while IFS= read -r host_entry; do
+        [[ -z "$host_entry" ]] && continue
+        host_args+=(--add-host "$host_entry")
+    done < <(cb_config_get_array "extra_hosts")
+
     # Create container
     echo "Creating container '${container_name}'..."
     docker run -d \
@@ -246,6 +267,7 @@ cmd_init() {
         -w "/workspace/${cwd_leaf}" \
         "${mount_args[@]}" \
         "${env_args[@]}" \
+        "${host_args[@]}" \
         "$IMAGE_NAME" sleep infinity
 
     # --- Write config files into container ---
@@ -268,11 +290,13 @@ cmd_init() {
         --argjson extra_commands "$(jq '.extra_commands // []' "$CB_MERGED_CONFIG")" \
         --argjson extra_apt "$(jq '.extra_apt_packages // []' "$CB_MERGED_CONFIG")" \
         --argjson extra_volumes "$(jq '.extra_volumes // {}' "$CB_MERGED_CONFIG")" \
+        --argjson module_env "$(jq '.env // {}' "$CB_MERGED_CONFIG")" \
         '{
             name: $lang.name,
             apt_deps: ($lang.apt_deps + $extra_apt),
             install_commands: $lang.install_commands,
             env: $lang.env,
+            module_env: $module_env,
             extra_commands: $extra_commands,
             volumes: (($lang.volumes // {}) + $extra_volumes)
         }')
@@ -755,6 +779,274 @@ cmd_dotnet_seed_nuget_cache() {
     echo "NuGet cache seeded: ${pkg_count} package(s) copied to ${cache_dir}"
 }
 
+# --- Module resolution helper ---
+
+cb_find_module() {
+    local name="$1"
+    local project_dir="${2:-$(pwd)}"
+    local builtin_path="${CLAUDEBOX_HOME}/modules/${name}.json"
+    local user_path="${HOME}/.claudebox/modules/${name}.json"
+    local project_path="${project_dir}/.claudebox/modules/${name}.json"
+    if [[ -f "$builtin_path" ]]; then echo "$builtin_path"; return 0; fi
+    if [[ -f "$user_path" ]]; then echo "$user_path"; return 0; fi
+    if [[ -f "$project_path" ]]; then echo "$project_path"; return 0; fi
+    return 1
+}
+
+# --- Subcommand: module ---
+
+cmd_module() {
+    local subcmd="${1:-}"
+    shift || true
+    case "$subcmd" in
+        list)   cmd_module_list ;;
+        add)    cmd_module_add "$@" ;;
+        remove) cmd_module_remove "$@" ;;
+        apply)  cmd_module_apply "$@" ;;
+        create) cmd_module_create "$@" ;;
+        export) cmd_module_export "$@" ;;
+        import) cmd_module_import "$@" ;;
+        *)
+            echo "Usage: claudebox module <list|add|remove|apply|create|export|import>" >&2
+            exit 1
+            ;;
+    esac
+}
+
+cmd_module_list() {
+    local -A seen=()
+    echo "Available modules:"
+    echo ""
+    _list_modules_in() {
+        local dir="$1" label="$2"
+        if [[ ! -d "$dir" ]]; then return; fi
+        while IFS= read -r f; do
+            local name; name=$(basename "$f" .json)
+            [[ -n "${seen[$name]+_}" ]] && continue
+            seen["$name"]=1
+            local desc; desc=$(jq -r '.description // "(no description)"' "$f" 2>/dev/null)
+            printf "  %-20s %s  [%s]\n" "$name" "$desc" "$label"
+        done < <(find "$dir" -maxdepth 1 -name "*.json" 2>/dev/null | sort)
+    }
+    _list_modules_in "${CLAUDEBOX_HOME}/modules" "built-in"
+    _list_modules_in "${HOME}/.claudebox/modules" "user"
+    _list_modules_in "$(pwd)/.claudebox/modules" "project"
+    unset -f _list_modules_in
+    if [[ ${#seen[@]} -eq 0 ]]; then
+        echo "  (none found)"
+    fi
+}
+
+cmd_module_add() {
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then echo "Usage: claudebox module add <name>" >&2; exit 1; fi
+    if ! cb_find_module "$name" > /dev/null 2>&1; then
+        echo "Error: Module '${name}' not found. Run 'claudebox module list' to see available modules." >&2
+        exit 1
+    fi
+    local config_file=".claudebox.json"
+    if [[ ! -f "$config_file" ]]; then echo '{}' > "$config_file"; fi
+    local updated
+    updated=$(jq --arg name "$name" '
+        .modules = ((.modules // []) | if index($name) then . else . + [$name] end)
+    ' "$config_file")
+    echo "$updated" > "$config_file"
+    echo "Module '${name}' added to .claudebox.json"
+    echo "Tip: Run 'claudebox module apply ${name}' to install it in the running container without rebuilding."
+}
+
+cmd_module_remove() {
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then echo "Usage: claudebox module remove <name>" >&2; exit 1; fi
+    local config_file=".claudebox.json"
+    if [[ ! -f "$config_file" ]]; then echo "No .claudebox.json found." >&2; exit 1; fi
+    local updated
+    updated=$(jq --arg name "$name" '.modules = ((.modules // []) | map(select(. != $name)))' "$config_file")
+    echo "$updated" > "$config_file"
+    echo "Module '${name}' removed from .claudebox.json"
+}
+
+cmd_module_apply() {
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then echo "Usage: claudebox module apply <name>" >&2; exit 1; fi
+
+    check_docker
+
+    local module_file
+    if ! module_file=$(cb_find_module "$name"); then
+        echo "Error: Module '${name}' not found." >&2; exit 1
+    fi
+
+    local cwd; cwd=$(pwd)
+    local container_name
+    container_name=$(find_container_by_hash "$cwd")
+    if [[ -z "$container_name" ]]; then container_name=$(get_container_name "$cwd"); fi
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || true)
+    if [[ "$status" != "running" ]]; then
+        echo "Error: Container '${container_name}' is not running." >&2; exit 1
+    fi
+
+    echo "Applying module '${name}' to container '${container_name}'..."
+
+    # Update live firewall with any new domains/suffixes from the module
+    local mod_domains mod_suffixes
+    mod_domains=$(jq -r '.extra_domains[]?' "$module_file" 2>/dev/null || true)
+    mod_suffixes=$(jq -r '.extra_suffixes[]?' "$module_file" 2>/dev/null || true)
+    if [[ -n "$mod_domains" || -n "$mod_suffixes" ]]; then
+        echo "  [updating firewall]"
+        docker exec -u root "$container_name" bash -c '
+            while IFS= read -r domain; do
+                [[ -z "$domain" ]] && continue
+                echo "ipset=/${domain}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+            done <<< "$1"
+            while IFS= read -r suffix; do
+                [[ -z "$suffix" ]] && continue
+                echo "ipset=/.${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+                echo "ipset=/${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+            done <<< "$2"
+            # Restart dnsmasq so new ipset rules are active before apt runs
+            pid=$(cat /var/run/dnsmasq.pid 2>/dev/null || cat /run/dnsmasq.pid 2>/dev/null || echo "")
+            [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+            dnsmasq --conf-dir=/etc/dnsmasq.d 2>/dev/null
+            sleep 1
+        ' -- "$mod_domains" "$mod_suffixes"
+    fi
+
+    # Refresh apt package lists so modules can install packages without needing apt-get update in their commands
+    echo "  [apt-get update]"
+    docker exec -u root "$container_name" apt-get update -qq
+
+    # Run extra_commands
+    local cmds
+    cmds=$(jq -r '.extra_commands[]?' "$module_file")
+    while IFS= read -r cmd; do
+        [[ -z "$cmd" ]] && continue
+        echo "  + ${cmd}"
+        docker exec -u root "$container_name" bash -c "source /home/node/.env.sh 2>/dev/null; $cmd"
+    done <<< "$cmds"
+
+    # Append env entries to /home/node/.env.sh
+    local env_keys
+    env_keys=$(jq -r '.env // {} | keys[]' "$module_file" 2>/dev/null || true)
+    while IFS= read -r key; do
+        [[ -z "$key" ]] && continue
+        local val
+        val=$(jq -r --arg k "$key" '.env[$k]' "$module_file")
+        docker exec -u root "$container_name" bash -c '
+            key="$1" val="$2"
+            sed -i "/^export ${key}=/d" /home/node/.env.sh 2>/dev/null || true
+            printf "export %s=\"%s\"\n" "$key" "$val" >> /home/node/.env.sh
+        ' -- "$key" "$val"
+    done <<< "$env_keys"
+
+    echo ""
+    echo "Module '${name}' applied."
+    echo "Note: Run 'source ~/.env.sh' or open a new shell for PATH/env changes to take effect."
+}
+
+cmd_module_create() {
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then echo "Usage: claudebox module create <name>" >&2; exit 1; fi
+    local target="${HOME}/.claudebox/modules/${name}.json"
+    mkdir -p "$(dirname "$target")"
+    if [[ -f "$target" ]]; then
+        echo "Module already exists: ${target}" >&2; exit 1
+    fi
+    cat > "$target" <<EOF
+{
+  "name": "${name}",
+  "description": "TODO: describe what this module installs",
+  "extra_domains": [],
+  "extra_suffixes": [],
+  "extra_apt_packages": [],
+  "extra_commands": [],
+  "env": {}
+}
+EOF
+    echo "Created: ${target}"
+    echo "Edit it, then run 'claudebox module add ${name}' to use it in this project."
+}
+
+cmd_module_export() {
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then echo "Usage: claudebox module export <name>" >&2; exit 1; fi
+    local module_file
+    if ! module_file=$(cb_find_module "$name"); then
+        echo "Error: Module '${name}' not found." >&2; exit 1
+    fi
+    cat "$module_file"
+}
+
+cmd_module_import() {
+    local file="${1:--}"
+    local content
+    if [[ "$file" == "-" ]]; then
+        content=$(cat)
+    else
+        content=$(cat "$file")
+    fi
+    local name
+    name=$(echo "$content" | jq -r '.name // empty')
+    if [[ -z "$name" ]]; then
+        echo "Error: Module JSON must have a 'name' field." >&2; exit 1
+    fi
+    mkdir -p "${HOME}/.claudebox/modules"
+    local target="${HOME}/.claudebox/modules/${name}.json"
+    echo "$content" | jq '.' > "$target"
+    echo "Module '${name}' imported to ${target}"
+}
+
+# --- Subcommand: use-profile ---
+
+cmd_use_profile() {
+    local profile_name="${1:-}"
+    if [[ -z "$profile_name" ]]; then
+        echo "Usage: claudebox use-profile <name>" >&2
+        exit 1
+    fi
+
+    local cwd; cwd=$(pwd)
+    cb_load_config "$cwd"
+
+    # Validate profile exists
+    local profile_vars
+    profile_vars=$(jq -r --arg p "$profile_name" '.env_profiles[$p] // empty | to_entries[] | "\(.key)=\(.value)"' "$CB_MERGED_CONFIG" 2>/dev/null || true)
+    if [[ -z "$profile_vars" ]]; then
+        echo "Error: Profile '${profile_name}' not found in config." >&2
+        echo "Available profiles: $(jq -r '.env_profiles // {} | keys | join(", ")' "$CB_MERGED_CONFIG")" >&2
+        exit 1
+    fi
+
+    local container_name
+    container_name=$(find_container_by_hash "$cwd")
+    if [[ -z "$container_name" ]]; then container_name=$(get_container_name "$cwd"); fi
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || true)
+    if [[ "$status" != "running" ]]; then
+        echo "Error: Container '${container_name}' is not running." >&2; exit 1
+    fi
+
+    echo "Switching to profile '${profile_name}' in container '${container_name}'..."
+
+    while IFS= read -r kv; do
+        [[ -z "$kv" ]] && continue
+        local key="${kv%%=*}"
+        local val="${kv#*=}"
+        # Update or append in .env.sh, using positional args to avoid injection
+        docker exec -u root "$container_name" bash -c '
+            key="$1" val="$2"
+            sed -i "/^export ${key}=/d" /home/node/.env.sh 2>/dev/null || true
+            printf "export %s=%q\n" "$key" "$val" >> /home/node/.env.sh
+        ' -- "$key" "$val"
+        echo "  ${key}=${val}"
+    done <<< "$profile_vars"
+
+    echo ""
+    echo "Profile '${profile_name}' active."
+    echo "Note: Run 'source ~/.env.sh' or open a new shell for changes to take effect."
+}
+
 # --- Subcommand: help ---
 
 cmd_help() {
@@ -782,6 +1074,14 @@ USAGE:
     claudebox dotnet seed-nuget-cache [--source <path>]
                                        Copy NuGet packages from host into ~/.claudebox/nuget-cache/
                                        for offline use inside dotnet containers (default source: ~/.nuget/packages)
+    claudebox module list              List available modules (built-in, user, project)
+    claudebox module add <name>        Add a module to .claudebox.json
+    claudebox module remove <name>     Remove a module from .claudebox.json
+    claudebox module apply <name>      Install a module into the running container without rebuilding
+    claudebox module create <name>     Create a new user-scoped module template
+    claudebox module export <name>     Print a module's JSON to stdout
+    claudebox module import [file]     Import a module JSON (stdin if no file given)
+    claudebox use-profile <name>       Switch active env profile in the running container
     claudebox help                     Show this help message
 
 SUPPORTED LANGUAGES:
@@ -811,6 +1111,8 @@ case "$subcommand" in
     upgrade) cmd_upgrade "$@" ;;
     dotnet)  cmd_dotnet "$@" ;;
     uninstall) cmd_uninstall ;;
+    module)  cmd_module "$@" ;;
+    use-profile) check_docker; cmd_use_profile "$@" ;;
     *)
         check_docker
         case "$subcommand" in

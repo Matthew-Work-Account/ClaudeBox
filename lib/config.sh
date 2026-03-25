@@ -15,7 +15,7 @@ cb_load_config() {
     local local_config="${project_dir}/.claudebox.json"
 
     # Start with empty defaults
-    local base='{"language":"auto","claude_config_path":"","extra_domains":[],"extra_suffixes":[],"extra_volumes":{},"extra_apt_packages":[],"extra_commands":[]}'
+    local base='{"language":"auto","claude_config_path":"","extra_domains":[],"extra_suffixes":[],"extra_volumes":{},"extra_apt_packages":[],"extra_commands":[],"modules":[],"extra_env":[],"env_profile":"","env_profiles":{},"default_env_profile":"","extra_hosts":[]}'
 
     local global_json="$base"
     if [[ -f "$global_config" ]]; then
@@ -35,11 +35,72 @@ cb_load_config() {
             .extra_domains = (($g.extra_domains // []) + ($l.extra_domains // [])) |
             .extra_suffixes = (($g.extra_suffixes // []) + ($l.extra_suffixes // [])) |
             .extra_apt_packages = (($g.extra_apt_packages // []) + ($l.extra_apt_packages // [])) |
-            .extra_commands = (($g.extra_commands // []) + ($l.extra_commands // []))
+            .extra_commands = (($g.extra_commands // []) + ($l.extra_commands // [])) |
+            .extra_env = (($g.extra_env // []) + ($l.extra_env // [])) |
+            .modules = (($g.modules // []) + ($l.modules // [])) |
+            .extra_hosts = (($g.extra_hosts // []) + ($l.extra_hosts // []))
         ' <(echo "$global_json") "$local_config" > "$CB_MERGED_CONFIG"
     else
         echo "$global_json" > "$CB_MERGED_CONFIG"
     fi
+
+    cb_resolve_modules "$project_dir"
+}
+
+cb_resolve_modules() {
+    local project_dir="${1:-.}"
+
+    local module_names
+    module_names=$(jq -r '.modules[]?' "$CB_MERGED_CONFIG" 2>/dev/null || true)
+    [[ -z "$module_names" ]] && return 0
+
+    while IFS= read -r name; do
+        [[ -z "$name" ]] && continue
+
+        local module_file=""
+        local builtin_path="${CLAUDEBOX_HOME}/modules/${name}.json"
+        local user_path="${HOME}/.claudebox/modules/${name}.json"
+        local project_path="${project_dir}/.claudebox/modules/${name}.json"
+
+        if [[ -f "$builtin_path" ]]; then
+            module_file="$builtin_path"
+        elif [[ -f "$user_path" ]]; then
+            module_file="$user_path"
+        elif [[ -f "$project_path" ]]; then
+            module_file="$project_path"
+        else
+            echo "Warning: Module '${name}' not found (searched built-in, user, and project paths)" >&2
+            continue
+        fi
+
+        local merged
+        merged=$(jq -s '
+            .[0] as $cfg | .[1] as $mod |
+            $cfg |
+            .extra_domains = (($cfg.extra_domains // []) + ($mod.extra_domains // [])) |
+            .extra_suffixes = (($cfg.extra_suffixes // []) + ($mod.extra_suffixes // [])) |
+            .extra_apt_packages = (($cfg.extra_apt_packages // []) + ($mod.extra_apt_packages // [])) |
+            .extra_commands = (($cfg.extra_commands // []) + ($mod.extra_commands // [])) |
+            .extra_env = (($cfg.extra_env // []) + ($mod.extra_env // [])) |
+            .env = (($cfg.env // {}) + ($mod.env // {}))
+        ' "$CB_MERGED_CONFIG" "$module_file")
+        echo "$merged" > "$CB_MERGED_CONFIG"
+    done <<< "$module_names"
+}
+
+cb_resolve_env_profile() {
+    local active_profile
+    active_profile=$(jq -r '.env_profile // empty' "$CB_MERGED_CONFIG" 2>/dev/null || true)
+
+    if [[ -z "$active_profile" ]]; then
+        active_profile=$(jq -r '.default_env_profile // empty' "$CB_MERGED_CONFIG" 2>/dev/null || true)
+    fi
+
+    [[ -z "$active_profile" ]] && return 0
+
+    jq -r --arg p "$active_profile" \
+        '.env_profiles[$p] // {} | to_entries[] | "\(.key)=\(.value)"' \
+        "$CB_MERGED_CONFIG" 2>/dev/null || true
 }
 
 cb_config_get() {
