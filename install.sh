@@ -91,6 +91,7 @@ chmod +x "${CLAUDEBOX_HOME}/uninstall.sh"
 cp -r "${SCRIPT_DIR}/lib" "${CLAUDEBOX_HOME}/"
 cp -r "${SCRIPT_DIR}/languages" "${CLAUDEBOX_HOME}/"
 cp -r "${SCRIPT_DIR}/.devcontainer" "${CLAUDEBOX_HOME}/"
+[[ -d "${SCRIPT_DIR}/modules" ]] && cp -r "${SCRIPT_DIR}/modules" "${CLAUDEBOX_HOME}/"
 
 # --- Save repo URL for upgrades ---
 repo_url=$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || true)
