@@ -67,6 +67,70 @@ cb_language_mounts() {
     fi
 }
 
+# --- Registry functions ---
+
+# registry_add uses Python instead of jq for writes because os.replace() performs
+# an atomic rename(2) syscall — the temp file is written in full, then swapped into
+# place in a single kernel operation.  This prevents partial-write corruption when
+# concurrent `claudebox init` or `claudebox destroy` calls race on the same registry
+# file.  jq pipelines (jq ... | sponge, or redirect via >) do not provide this
+# guarantee: a redirect truncates the file before writing, and sponge is not
+# universally available.
+registry_add() {
+    local name="$1" project_dir="$2" language="$3"
+    # Upsert container entry into registry so GUI can discover it without
+    # scanning all Docker containers on every launch (ref: DL-002)
+    local registry="${HOME}/.claudebox/registry.json"
+    mkdir -p "$(dirname "$registry")"
+    python3 - "$name" "$project_dir" "$language" "$registry" <<'PYEOF'
+import sys, json, os, tempfile
+from datetime import datetime, timezone
+name, project_dir, language, registry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    with open(registry) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+if not isinstance(data, dict) or "containers" not in data:
+    data = {"containers": {}}
+containers = data["containers"]
+existing = containers.get(name, {})
+containers[name] = {
+    "project_dir": project_dir,
+    "language": language,
+    "created_at": existing.get("created_at") or datetime.now(timezone.utc).isoformat(),
+}
+data["containers"] = containers
+tmp = registry + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, registry)
+PYEOF
+}
+
+registry_remove() {
+    local name="$1"
+    # Idempotent: no-op if entry not found; removes stale entries on destroy (ref: DL-002)
+    local registry="${HOME}/.claudebox/registry.json"
+    [[ ! -f "$registry" ]] && return 0
+    python3 - "$name" "$registry" <<'PYEOF'
+import sys, json, os
+name, registry = sys.argv[1], sys.argv[2]
+try:
+    with open(registry) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+if not isinstance(data, dict) or "containers" not in data:
+    data = {"containers": {}}
+data["containers"].pop(name, None)
+tmp = registry + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, registry)
+PYEOF
+}
+
 # --- Utility functions ---
 
 get_container_hash() {
@@ -147,17 +211,38 @@ cmd_init() {
     local cwd_leaf
     cwd_leaf=$(basename "$cwd")
 
-    # Load config and detect language
+    # Load config and detect language(s).
+    # language config may be a string ("node") or JSON array (["node","python"]).
+    # Arrays are read directly; strings fall through to cb_detect_language.
     cb_load_config "$cwd"
-    local language
-    language=$(cb_detect_language "$cwd")
-    echo "Detected language: ${language}"
 
-    local lang_file="${LANGUAGES_DIR}/${language}.json"
-    if [[ ! -f "$lang_file" ]]; then
-        echo "Error: No language definition found for '${language}'" >&2
-        exit 1
+    local languages_raw
+    languages_raw=$(jq -r '.language // "auto"' "$CB_MERGED_CONFIG")
+
+    local -a languages=()
+    if echo "$languages_raw" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        while IFS= read -r lang; do
+            [[ -n "$lang" ]] && languages+=("$lang")
+        done < <(echo "$languages_raw" | jq -r '.[]')
+        [[ ${#languages[@]} -eq 0 ]] && { echo "Error: language array is empty" >&2; exit 1; }
+        echo "Languages: ${languages[*]}"
+    else
+        local _detected
+        _detected=$(cb_detect_language "$cwd")
+        languages=("$_detected")
+        echo "Detected language: ${_detected}"
     fi
+
+    # Validate all language definitions exist upfront
+    for lang in "${languages[@]}"; do
+        if [[ ! -f "${LANGUAGES_DIR}/${lang}.json" ]]; then
+            echo "Error: No language definition found for '${lang}'" >&2
+            exit 1
+        fi
+    done
+
+    # Primary language (first in list) used for display and registry
+    local language="${languages[0]}"
 
     # Build image if needed
     local image_exists
@@ -192,28 +277,32 @@ cmd_init() {
     touch "$history_file"
     mount_args+=(-v "${history_file}:/home/node/.bash_history")
 
-    # Language-specific named volumes
-    local vol_names vol_paths
-    vol_names=$(jq -r '.volumes | keys[]' "$lang_file" 2>/dev/null || true)
-    while IFS= read -r vol_name; do
-        [[ -z "$vol_name" ]] && continue
-        local vol_path
-        vol_path=$(jq -r ".volumes[\"${vol_name}\"]" "$lang_file")
-        mount_args+=(-v "${vol_name}:${vol_path}")
-    done <<< "$vol_names"
+    # Language-specific named volumes (all languages)
+    for lang in "${languages[@]}"; do
+        local _lf="${LANGUAGES_DIR}/${lang}.json"
+        local vol_names
+        vol_names=$(jq -r '.volumes | keys[]' "$_lf" 2>/dev/null || true)
+        while IFS= read -r vol_name; do
+            [[ -z "$vol_name" ]] && continue
+            local vol_path
+            vol_path=$(jq -r ".volumes[\"${vol_name}\"]" "$_lf")
+            mount_args+=(-v "${vol_name}:${vol_path}")
+        done <<< "$vol_names"
+    done
 
-    # Bind-mount the host NuGet seed cache read-only when present (ref: DL-002, DL-005).
-    # Read-only prevents container writes from corrupting the seeded cache.
-    # Mount is skipped when the directory is absent; no mount args are added.
-    if [[ "$language" == "dotnet" ]]; then
-        local nuget_seed_dir="${HOME}/.claudebox/nuget-cache"
-        if [[ -d "$nuget_seed_dir" ]]; then
-            mount_args+=(-v "${nuget_seed_dir}:/home/node/.nuget-cache-seed:ro")
+    # Bind-mount the host NuGet seed cache read-only when dotnet is in the language list.
+    # Read-only prevents container writes from corrupting the seeded cache. (ref: DL-002, DL-005)
+    for lang in "${languages[@]}"; do
+        if [[ "$lang" == "dotnet" ]]; then
+            local nuget_seed_dir="${HOME}/.claudebox/nuget-cache"
+            if [[ -d "$nuget_seed_dir" ]]; then
+                mount_args+=(-v "${nuget_seed_dir}:/home/node/.nuget-cache-seed:ro")
+            fi
+            break
         fi
-    fi
+    done
 
-
-    # Language-specific auto-mounts (e.g. dotnet sibling repo detection)
+    # Language-specific auto-mounts for all languages (e.g. dotnet sibling repo detection)
     while IFS= read -r vol_entry; do
         [[ -z "$vol_entry" ]] && continue
         local host_part="${vol_entry%%:*}"
@@ -221,7 +310,7 @@ cmd_init() {
         local container_part="${rest%%:*}"
         echo "Auto-mounting: ${host_part} -> ${container_part}"
         mount_args+=(-v "$vol_entry")
-    done < <(cb_language_mounts "$language" "$cwd")
+    done < <(for lang in "${languages[@]}"; do cb_language_mounts "$lang" "$cwd"; done)
     # Extra volumes from config
     local extra_vols
     extra_vols=$(jq -r '.extra_volumes // {} | to_entries[] | "\(.key):\(.value)"' "$CB_MERGED_CONFIG" 2>/dev/null || true)
@@ -272,47 +361,81 @@ cmd_init() {
 
     # --- Write config files into container ---
 
-    # Build domains JSON for firewall
+    # Build domains JSON for firewall — union of all languages + extra config
+    local all_lang_domains='[]' all_lang_suffixes='[]'
+    for lang in "${languages[@]}"; do
+        local _lf="${LANGUAGES_DIR}/${lang}.json"
+        all_lang_domains=$(jq -n \
+            --argjson a "$all_lang_domains" \
+            --argjson b "$(jq '.domains' "$_lf")" '$a + $b')
+        all_lang_suffixes=$(jq -n \
+            --argjson a "$all_lang_suffixes" \
+            --argjson b "$(jq '.suffixes' "$_lf")" '$a + $b')
+    done
     local domains_json
     domains_json=$(jq -n \
-        --argjson lang_domains "$(jq '.domains' "$lang_file")" \
-        --argjson lang_suffixes "$(jq '.suffixes' "$lang_file")" \
+        --argjson lang_domains "$all_lang_domains" \
+        --argjson lang_suffixes "$all_lang_suffixes" \
         --argjson extra_domains "$(jq '.extra_domains // []' "$CB_MERGED_CONFIG")" \
         --argjson extra_suffixes "$(jq '.extra_suffixes // []' "$CB_MERGED_CONFIG")" \
         '{domains: ($lang_domains + $extra_domains), suffixes: ($lang_suffixes + $extra_suffixes)}')
 
     echo "$domains_json" | docker exec -i "$container_name" tee /tmp/claudebox-domains.json > /dev/null
 
-    # Build provider JSON for install-language.sh
-    local provider_json
-    provider_json=$(jq -n \
-        --argjson lang "$(cat "$lang_file")" \
-        --argjson extra_commands "$(jq '.extra_commands // []' "$CB_MERGED_CONFIG")" \
-        --argjson extra_apt "$(jq '.extra_apt_packages // []' "$CB_MERGED_CONFIG")" \
-        --argjson extra_volumes "$(jq '.extra_volumes // {}' "$CB_MERGED_CONFIG")" \
-        --argjson module_env "$(jq '.env // {}' "$CB_MERGED_CONFIG")" \
-        '{
-            name: $lang.name,
-            apt_deps: ($lang.apt_deps + $extra_apt),
-            install_commands: $lang.install_commands,
-            env: $lang.env,
-            module_env: $module_env,
-            extra_commands: $extra_commands,
-            volumes: (($lang.volumes // {}) + $extra_volumes)
-        }')
-
-    echo "$provider_json" | docker exec -i "$container_name" tee /tmp/claudebox-provider.json > /dev/null
-
     # Run firewall init (as root)
     echo "Initializing firewall..."
     docker exec "$container_name" /usr/local/bin/init-firewall.sh
 
-    # Run language installer (as root, it drops to node internally)
-    echo "Installing language SDK..."
-    docker exec "$container_name" /usr/local/bin/install-language.sh
+    # Install each language sequentially.
+    # extra_commands, extra_apt, module_env, extra_volumes only injected on the
+    # first language to avoid running user-defined commands multiple times.
+    local _first_lang=true
+    for lang in "${languages[@]}"; do
+        local _lf="${LANGUAGES_DIR}/${lang}.json"
+        local provider_json
+        if $_first_lang; then
+            provider_json=$(jq -n \
+                --argjson lang "$(cat "$_lf")" \
+                --argjson extra_commands "$(jq '.extra_commands // []' "$CB_MERGED_CONFIG")" \
+                --argjson extra_apt "$(jq '.extra_apt_packages // []' "$CB_MERGED_CONFIG")" \
+                --argjson extra_volumes "$(jq '.extra_volumes // {}' "$CB_MERGED_CONFIG")" \
+                --argjson module_env "$(jq '.env // {}' "$CB_MERGED_CONFIG")" \
+                '{
+                    name: $lang.name,
+                    apt_deps: ($lang.apt_deps + $extra_apt),
+                    install_commands: $lang.install_commands,
+                    env: $lang.env,
+                    module_env: $module_env,
+                    extra_commands: $extra_commands,
+                    volumes: (($lang.volumes // {}) + $extra_volumes)
+                }')
+            _first_lang=false
+        else
+            provider_json=$(jq -n \
+                --argjson lang "$(cat "$_lf")" \
+                '{
+                    name: $lang.name,
+                    apt_deps: $lang.apt_deps,
+                    install_commands: $lang.install_commands,
+                    env: $lang.env,
+                    module_env: {},
+                    extra_commands: [],
+                    volumes: ($lang.volumes // {})
+                }')
+        fi
+        echo "$provider_json" | docker exec -i "$container_name" tee /tmp/claudebox-provider.json > /dev/null
+        echo "Installing language SDK: ${lang}..."
+        docker exec "$container_name" /usr/local/bin/install-language.sh
+    done
 
     # Copy claude config subfolders into container
     cb_copy_claude_config "$container_name"
+
+    # Register container so GUI can list it without scanning all Docker containers (ref: DL-002)
+    # Store languages as comma-separated string; single language stays backwards compatible.
+    local lang_str
+    lang_str=$(IFS=,; echo "${languages[*]}")
+    registry_add "$container_name" "$cwd" "$lang_str"
 
     # Attach shell as node user (unless --no-start was passed)
     if $no_start; then
@@ -360,20 +483,29 @@ cmd_stop() {
     if [[ -z "$container_name" ]]; then
         container_name=$(get_container_name "$cwd")
     fi
+    if ! docker inspect "$container_name" &>/dev/null; then
+        echo "No container found for this directory. Run 'claudebox init' first." >&2
+        exit 1
+    fi
     docker stop "$container_name"
 }
 
 # --- Subcommand: destroy ---
 
 cmd_destroy() {
-    local cwd
-    cwd=$(pwd)
-    local container_name
-    container_name=$(find_container_by_hash "$cwd")
+    local container_name="${1:-}"
     if [[ -z "$container_name" ]]; then
-        container_name=$(get_container_name "$cwd")
+        local cwd
+        cwd=$(pwd)
+        container_name=$(find_container_by_hash "$cwd")
+        if [[ -z "$container_name" ]]; then
+            container_name=$(get_container_name "$cwd")
+        fi
     fi
     docker rm -f "$container_name"
+    # Registry entry is intentionally kept so the GUI can show the container
+    # as "removed" with a Rebuild option. Use `claudebox unregister` to fully
+    # remove it from the registry.
 }
 
 # --- Subcommand: ref ---
@@ -779,20 +911,6 @@ cmd_dotnet_seed_nuget_cache() {
     echo "NuGet cache seeded: ${pkg_count} package(s) copied to ${cache_dir}"
 }
 
-# --- Module resolution helper ---
-
-cb_find_module() {
-    local name="$1"
-    local project_dir="${2:-$(pwd)}"
-    local builtin_path="${CLAUDEBOX_HOME}/modules/${name}.json"
-    local user_path="${HOME}/.claudebox/modules/${name}.json"
-    local project_path="${project_dir}/.claudebox/modules/${name}.json"
-    if [[ -f "$builtin_path" ]]; then echo "$builtin_path"; return 0; fi
-    if [[ -f "$user_path" ]]; then echo "$user_path"; return 0; fi
-    if [[ -f "$project_path" ]]; then echo "$project_path"; return 0; fi
-    return 1
-}
-
 # --- Subcommand: module ---
 
 cmd_module() {
@@ -866,67 +984,33 @@ cmd_module_remove() {
     echo "Module '${name}' removed from .claudebox.json"
 }
 
-cmd_module_apply() {
-    local name="${1:-}"
-    if [[ -z "$name" ]]; then echo "Usage: claudebox module apply <name>" >&2; exit 1; fi
-
-    check_docker
-
-    local module_file
-    if ! module_file=$(cb_find_module "$name"); then
-        echo "Error: Module '${name}' not found." >&2; exit 1
-    fi
-
-    local cwd; cwd=$(pwd)
-    local container_name
-    container_name=$(find_container_by_hash "$cwd")
-    if [[ -z "$container_name" ]]; then container_name=$(get_container_name "$cwd"); fi
-    local status
-    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || true)
-    if [[ "$status" != "running" ]]; then
-        echo "Error: Container '${container_name}' is not running." >&2; exit 1
-    fi
-
-    echo "Applying module '${name}' to container '${container_name}'..."
-
-    # Update live firewall with any new domains/suffixes from the module
+_module_apply_firewall() {
+    local container_name="$1" module_file="$2"
     local mod_domains mod_suffixes
     mod_domains=$(jq -r '.extra_domains[]?' "$module_file" 2>/dev/null || true)
     mod_suffixes=$(jq -r '.extra_suffixes[]?' "$module_file" 2>/dev/null || true)
-    if [[ -n "$mod_domains" || -n "$mod_suffixes" ]]; then
-        echo "  [updating firewall]"
-        docker exec -u root "$container_name" bash -c '
-            while IFS= read -r domain; do
-                [[ -z "$domain" ]] && continue
-                echo "ipset=/${domain}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
-            done <<< "$1"
-            while IFS= read -r suffix; do
-                [[ -z "$suffix" ]] && continue
-                echo "ipset=/.${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
-                echo "ipset=/${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
-            done <<< "$2"
-            # Restart dnsmasq so new ipset rules are active before apt runs
-            pid=$(cat /var/run/dnsmasq.pid 2>/dev/null || cat /run/dnsmasq.pid 2>/dev/null || echo "")
-            [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
-            dnsmasq --conf-dir=/etc/dnsmasq.d 2>/dev/null
-            sleep 1
-        ' -- "$mod_domains" "$mod_suffixes"
-    fi
+    [[ -z "$mod_domains" && -z "$mod_suffixes" ]] && return 0
+    echo "  [updating firewall]"
+    docker exec -u root "$container_name" bash -c '
+        while IFS= read -r domain; do
+            [[ -z "$domain" ]] && continue
+            echo "ipset=/${domain}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+        done <<< "$1"
+        while IFS= read -r suffix; do
+            [[ -z "$suffix" ]] && continue
+            echo "ipset=/.${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+            echo "ipset=/${suffix}/allowed-ips" >> /etc/dnsmasq.d/claudebox.conf
+        done <<< "$2"
+        # Restart dnsmasq so new ipset rules are active before apt runs
+        pid=$(cat /var/run/dnsmasq.pid 2>/dev/null || cat /run/dnsmasq.pid 2>/dev/null || echo "")
+        [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
+        dnsmasq --conf-dir=/etc/dnsmasq.d 2>/dev/null
+        sleep 1
+    ' -- "$mod_domains" "$mod_suffixes"
+}
 
-    # Refresh apt package lists so modules can install packages without needing apt-get update in their commands
-    echo "  [apt-get update]"
-    docker exec -u root "$container_name" apt-get update -qq
-
-    # Run extra_commands
-    local cmds
-    cmds=$(jq -r '.extra_commands[]?' "$module_file")
-    while IFS= read -r cmd; do
-        [[ -z "$cmd" ]] && continue
-        echo "  + ${cmd}"
-        docker exec -u root "$container_name" bash -c "source /home/node/.env.sh 2>/dev/null; $cmd"
-    done <<< "$cmds"
-
-    # Append env entries to /home/node/.env.sh
+_module_apply_env() {
+    local container_name="$1" module_file="$2"
     local env_keys
     env_keys=$(jq -r '.env // {} | keys[]' "$module_file" 2>/dev/null || true)
     while IFS= read -r key; do
@@ -939,6 +1023,76 @@ cmd_module_apply() {
             printf "export %s=\"%s\"\n" "$key" "$val" >> /home/node/.env.sh
         ' -- "$key" "$val"
     done <<< "$env_keys"
+}
+
+cmd_module_apply() {
+    # Parse --container <name> flag so the GUI can pass the name directly
+    # without relying on cwd hash lookup.
+    local container_arg=""
+    local -a positional=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --container) container_arg="$2"; shift 2 ;;
+            *) positional+=("$1"); shift ;;
+        esac
+    done
+    set -- "${positional[@]}"
+
+    local name="${1:-}"
+    if [[ -z "$name" ]]; then echo "Usage: claudebox module apply <name>" >&2; exit 1; fi
+
+    check_docker
+
+    local module_file
+    if ! module_file=$(cb_find_module "$name"); then
+        echo "Error: Module '${name}' not found." >&2; exit 1
+    fi
+
+    local container_name
+    if [[ -n "$container_arg" ]]; then
+        container_name="$container_arg"
+    else
+        local cwd; cwd=$(pwd)
+        container_name=$(find_container_by_hash "$cwd")
+        if [[ -z "$container_name" ]]; then container_name=$(get_container_name "$cwd"); fi
+    fi
+    local status
+    status=$(docker inspect --format '{{.State.Status}}' "$container_name" 2>/dev/null || true)
+    if [[ "$status" != "running" ]]; then
+        echo "Error: Container '${container_name}' is not running." >&2; exit 1
+    fi
+
+    echo "Applying module '${name}' to container '${container_name}'..."
+
+    _module_apply_firewall "$container_name" "$module_file"
+
+    # Refresh apt package lists so modules can install packages without needing apt-get update in their commands
+    echo "  [apt-get update]"
+    docker exec -u root "$container_name" apt-get update -qq
+
+    # Install extra_apt_packages declared by the module (mirrors install-language.sh init behaviour)
+    local apt_pkgs
+    apt_pkgs=$(jq -r '.extra_apt_packages[]?' "$module_file")
+    if [[ -n "$apt_pkgs" ]]; then
+        local pkg_arr=()
+        while IFS= read -r pkg; do
+            [[ -z "$pkg" ]] && continue
+            pkg_arr+=("$pkg")
+        done <<< "$apt_pkgs"
+        echo "  [apt-get install ${pkg_arr[*]}]"
+        docker exec -u root "$container_name" apt-get install -y "${pkg_arr[@]}"
+    fi
+
+    # Run extra_commands
+    local cmds
+    cmds=$(jq -r '.extra_commands[]?' "$module_file")
+    while IFS= read -r cmd; do
+        [[ -z "$cmd" ]] && continue
+        echo "  + ${cmd}"
+        docker exec -u root "$container_name" bash -c "source /home/node/.env.sh 2>/dev/null; $cmd"
+    done <<< "$cmds"
+
+    _module_apply_env "$container_name" "$module_file"
 
     echo ""
     echo "Module '${name}' applied."
@@ -997,6 +1151,24 @@ cmd_module_import() {
     echo "Module '${name}' imported to ${target}"
 }
 
+# --- Subcommand: gui ---
+
+cmd_gui() {
+    # GUI serves on localhost so all file I/O (registry, configs) goes through
+    # the Python API layer — browser never touches local files directly (ref: DL-003)
+    if ! command -v python3 &> /dev/null; then
+        echo "Error: python3 is required to run the ClaudeBox GUI." >&2
+        exit 1
+    fi
+    local gui_dir="${CLAUDEBOX_HOME}/gui"
+    if [[ ! -d "$gui_dir" ]]; then
+        echo "Error: GUI directory not found at ${gui_dir}. Try reinstalling ClaudeBox." >&2
+        exit 1
+    fi
+    cd "${CLAUDEBOX_HOME}"
+    exec python3 -m gui "$@"
+}
+
 # --- Subcommand: use-profile ---
 
 cmd_use_profile() {
@@ -1037,7 +1209,7 @@ cmd_use_profile() {
         docker exec -u root "$container_name" bash -c '
             key="$1" val="$2"
             sed -i "/^export ${key}=/d" /home/node/.env.sh 2>/dev/null || true
-            printf "export %s=%q\n" "$key" "$val" >> /home/node/.env.sh
+            printf "export %s=\"%s\"\n" "$key" "$val" >> /home/node/.env.sh
         ' -- "$key" "$val"
         echo "  ${key}=${val}"
     done <<< "$profile_vars"
@@ -1082,6 +1254,7 @@ USAGE:
     claudebox module export <name>     Print a module's JSON to stdout
     claudebox module import [file]     Import a module JSON (stdin if no file given)
     claudebox use-profile <name>       Switch active env profile in the running container
+    claudebox gui [--port <port>]      Launch the ClaudeBox web dashboard
     claudebox help                     Show this help message
 
 SUPPORTED LANGUAGES:
@@ -1113,12 +1286,13 @@ case "$subcommand" in
     uninstall) cmd_uninstall ;;
     module)  cmd_module "$@" ;;
     use-profile) check_docker; cmd_use_profile "$@" ;;
+    gui)     cmd_gui "$@" ;;
     *)
         check_docker
         case "$subcommand" in
             init)    cmd_init "$@" ;;
             stop)    cmd_stop ;;
-            destroy) cmd_destroy ;;
+            destroy) cmd_destroy "$@" ;;
             ref)     cmd_ref "$@" ;;
             prune)   cmd_prune "$@" ;;
             refresh) cmd_refresh ;;

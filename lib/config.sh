@@ -47,6 +47,24 @@ cb_load_config() {
     cb_resolve_modules "$project_dir"
 }
 
+# cb_find_module -- Locate a module JSON file by name.
+# Search order: builtin -> user (~/.claudebox/modules/) -> project (.claudebox/modules/)
+# Built-ins take precedence intentionally: user and project scopes can add new modules
+# but cannot silently override built-ins. This ensures all users of a named built-in
+# get consistent, tested behavior regardless of local config. If you need to customize
+# a built-in, create a module with a different name and list both in 'modules'.
+cb_find_module() {
+    local name="$1"
+    local project_dir="${2:-$(pwd)}"
+    local builtin_path="${CLAUDEBOX_HOME}/modules/${name}.json"
+    local user_path="${HOME}/.claudebox/modules/${name}.json"
+    local project_path="${project_dir}/.claudebox/modules/${name}.json"
+    if [[ -f "$builtin_path" ]]; then echo "$builtin_path"; return 0; fi
+    if [[ -f "$user_path" ]]; then echo "$user_path"; return 0; fi
+    if [[ -f "$project_path" ]]; then echo "$project_path"; return 0; fi
+    return 1
+}
+
 cb_resolve_modules() {
     local project_dir="${1:-.}"
 
@@ -58,17 +76,7 @@ cb_resolve_modules() {
         [[ -z "$name" ]] && continue
 
         local module_file=""
-        local builtin_path="${CLAUDEBOX_HOME}/modules/${name}.json"
-        local user_path="${HOME}/.claudebox/modules/${name}.json"
-        local project_path="${project_dir}/.claudebox/modules/${name}.json"
-
-        if [[ -f "$builtin_path" ]]; then
-            module_file="$builtin_path"
-        elif [[ -f "$user_path" ]]; then
-            module_file="$user_path"
-        elif [[ -f "$project_path" ]]; then
-            module_file="$project_path"
-        else
+        if ! module_file=$(cb_find_module "$name" "$project_dir"); then
             echo "Warning: Module '${name}' not found (searched built-in, user, and project paths)" >&2
             continue
         fi

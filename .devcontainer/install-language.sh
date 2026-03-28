@@ -1,13 +1,13 @@
 #!/bin/bash
 # install-language.sh -- Universal language SDK installer for claudebox containers
 # Reads /tmp/claudebox-provider.json to determine what to install.
-# Runs as root for apt deps, then drops to node for SDK installs and extra commands.
+# Runs as root throughout. SDK installs execute as node user (via su). extra_commands run as root with node env sourced.
 #
 # JSON structure:
 #   {name, apt_deps[], install_commands[], env{}, extra_commands[]}
 #
 # For dotnet: delegates to install-dotnet.sh which scans .csproj files
-set -e
+set -euo pipefail
 
 PROVIDER_JSON="/tmp/claudebox-provider.json"
 

@@ -9,9 +9,18 @@ LANGUAGES_DIR="${CLAUDEBOX_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 cb_detect_language() {
     local project_dir="${1:-.}"
 
-    # If config specifies a language override (not "auto"), use it
+    # If config specifies a language override (not "auto"), use it.
+    # language may be a plain string OR a JSON array; arrays are handled in
+    # cmd_init directly — here we only need to return the primary/first entry
+    # so the caller can fall back to auto-detect when the value is "auto".
     local configured
     configured=$(cb_config_get "language" 2>/dev/null || echo "auto")
+
+    # If it's a JSON array, extract the first element for single-language callers
+    if echo "$configured" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        configured=$(echo "$configured" | jq -r '.[0] // "auto"')
+    fi
+
     if [[ "$configured" != "auto" && -n "$configured" ]]; then
         # Validate that the language definition exists
         if [[ -f "${LANGUAGES_DIR}/${configured}.json" ]]; then

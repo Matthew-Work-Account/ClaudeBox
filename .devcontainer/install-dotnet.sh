@@ -13,7 +13,7 @@
 #
 # sdk_installed() checks dotnet --list-sdks to avoid re-downloading already
 # present SDKs (named volume claudebox-dotnet persists across container recreations).
-set -e
+set -euo pipefail
 
 DOTNET_INSTALL_SCRIPT="/home/node/dotnet-install.sh"
 
