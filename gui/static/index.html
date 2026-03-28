@@ -1,0 +1,641 @@
+<!-- ClaudeBox Dashboard SPA — single HTML file, no build step required. (ref: DL-003) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ClaudeBox Dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+  <!-- xterm.js vendored locally (vendor/ contains @xterm/xterm@5.5.0 and @xterm/addon-fit@0.10.0) -->
+  <link rel="stylesheet" href="/vendor/xterm.css">
+  <script src="/vendor/xterm.js"></script>
+  <script src="/vendor/xterm-addon-fit.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <!-- Sidebar populated by JS (not server-side) so the static HTML
+             can be served without template rendering; list refreshes on page load. -->
+        <div class="sidebar-brand">
+          <svg class="sidebar-logo-icon" width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M10 2L17 6V14L10 18L3 14V6L10 2Z" stroke="var(--accent)" stroke-width="1.5" fill="none"/>
+            <path d="M10 6L14 8.5V13.5L10 16L6 13.5V8.5L10 6Z" fill="var(--accent)" opacity="0.3"/>
+          </svg>
+          <h1>ClaudeBox</h1>
+        </div>
+        <button id="theme-toggle-btn" class="theme-toggle-btn" title="Toggle light/dark theme">🌙</button>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-section-label">
+          <span>Containers</span>
+          <button id="refresh-list-btn" class="sidebar-refresh-btn" title="Refresh container list">↻ Refresh</button>
+        </div>
+        <nav id="container-list" class="container-list">
+          <div class="loading">Loading containers...</div>
+        </nav>
+        <div class="sidebar-new-btn-row">
+          <button id="new-container-btn" class="new-btn sidebar-new-btn">+ New Container</button>
+        </div>
+      </div>
+
+      <div class="sidebar-tools">
+        <div class="sidebar-section-label"><span>Tools</span></div>
+        <button id="modules-nav-btn" class="sidebar-tool-item">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+            <rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor" opacity="0.7"/>
+            <rect x="8" y="1" width="6" height="6" rx="1" fill="currentColor"/>
+            <rect x="1" y="8" width="6" height="6" rx="1" fill="currentColor"/>
+            <rect x="8" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.7"/>
+          </svg>
+          <span>Module Library</span>
+        </button>
+        <button id="settings-nav-btn" class="sidebar-tool-item">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
+            <circle cx="7.5" cy="7.5" r="2" stroke="currentColor" stroke-width="1.2"/>
+            <path d="M7.5 1v1.5M7.5 12.5V14M1 7.5h1.5M12.5 7.5H14M2.9 2.9l1.1 1.1M11 11l1.1 1.1M2.9 12.1l1.1-1.1M11 4l1.1-1.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+          </svg>
+          <span>Settings</span>
+        </button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <!-- Detail panel: 4 top-level tabs (Overview | Config | Modules | Inspect) -->
+      <section id="detail-panel" class="panel hidden">
+        <div class="detail-header">
+          <div class="detail-name-row">
+            <h2 id="detail-name"></h2>
+            <div class="nickname-edit-group hidden" id="nickname-edit-group">
+              <input type="text" id="nickname-input" class="nickname-input" placeholder="Add nickname…" maxlength="40" autocomplete="off" />
+              <button id="nickname-save-btn" class="nickname-save-btn" title="Save nickname">✓</button>
+              <button id="nickname-cancel-btn" class="nickname-cancel-btn" title="Cancel">✕</button>
+            </div>
+            <button id="nickname-edit-btn" class="nickname-edit-btn hidden" title="Set display nickname">✏</button>
+          </div>
+          <!-- Top-level tab bar; scoped with data-tab-group="detail" -->
+          <div class="detail-tabs">
+            <button class="tab-btn active" data-tab-group="detail" data-tab="overview">Overview</button>
+            <button class="tab-btn" data-tab-group="detail" data-tab="config">Config</button>
+            <button class="tab-btn" data-tab-group="detail" data-tab="modules">Modules</button>
+            <!-- tab-group-sep marks the first tab in a visual cluster.
+                 CSS applies a left border+margin to create separation.
+                 Clusters: [Overview Config Modules] | [Inspect Files] | [Refs Terminal].
+                 data-tab and data-for-tab values are unchanged. (PDL-001) -->
+            <button class="tab-btn tab-group-sep" data-tab-group="detail" data-tab="inspect">Inspect</button>
+            <button class="tab-btn" data-tab-group="detail" data-tab="files">Files</button>
+            <button class="tab-btn tab-group-sep" data-tab-group="detail" data-tab="refs">Refs</button>
+            <button class="tab-btn" data-tab-group="detail" data-tab="terminal">Terminal</button>
+          </div>
+        </div>
+
+        <!-- Overview tab: metadata + commands + link-project fallback -->
+        <div id="detail-tab-overview" class="detail-tab-content active" data-tab-group="detail" data-for-tab="overview">
+          <div class="detail-grid">
+            <div class="detail-row"><span class="label">Status</span><span id="detail-status" class="badge"></span></div>
+            <div class="detail-row"><span class="label">Language</span><span id="detail-language"></span></div>
+            <div class="detail-row"><span class="label">Project</span><span id="detail-project"></span></div>
+            <div class="detail-row"><span class="label">Created</span><span id="detail-created"></span></div>
+          </div>
+
+          <div class="command-panel">
+            <h3 class="section-heading">Commands</h3>
+            <!-- Command buttons organized into three intent groups separated by
+                 .cmd-group-sep dividers: session actions, config actions, and
+                 destructive actions. Destructive actions (Destroy, Unregister)
+                 are placed inside a .cmd-overflow-menu toggle to add friction.
+                 All button IDs and data-cmd values are preserved for app.js
+                 event bindings. (PDL-002) -->
+            <div class="command-buttons">
+              <div class="cmd-group">
+                <button id="cmd-stop-start-btn" class="cmd-btn cmd-stop" data-cmd="stop">⏹ Stop</button>
+                <button class="cmd-btn cmd-terminal" data-cmd="terminal">&gt;_ Terminal</button>
+                <button class="cmd-btn cmd-rebuild hidden" data-cmd="rebuild" id="cmd-rebuild-btn">🔧 Rebuild</button>
+              </div>
+              <div class="cmd-group-sep"></div>
+              <div class="cmd-group">
+                <button class="cmd-btn cmd-refresh" data-cmd="refresh">↺ Sync Config</button>
+              </div>
+              <div class="cmd-group-sep"></div>
+              <div class="cmd-group" style="position:relative">
+                <button class="cmd-overflow-toggle" id="cmd-overflow-toggle-btn" title="More actions">&#8230;</button>
+                <div class="cmd-overflow-menu hidden" id="cmd-overflow-menu">
+                  <button class="cmd-btn cmd-destroy" data-cmd="destroy">🗑 Destroy</button>
+                  <button class="cmd-btn cmd-unregister" data-cmd="unregister">✕ Unregister</button>
+                </div>
+              </div>
+            </div>
+            <div id="cmd-output" class="terminal hidden"></div>
+          </div>
+
+          <!-- Shown only when no project path could be auto-detected -->
+          <div id="link-project-form" class="link-project-form hidden">
+            <p>No project path found for this container. Enter the project directory to load config.</p>
+            <div class="link-project-row">
+              <input type="text" id="link-project-dir" placeholder="/path/to/project" autocomplete="off" />
+              <button id="link-project-btn">Link</button>
+            </div>
+            <div id="link-project-msg" class="config-msg"></div>
+          </div>
+
+          <!-- Profile switcher: shown when profiles are available -->
+          <div id="profile-switcher" class="profile-switcher hidden">
+            <h3 class="section-heading">Environment Profile</h3>
+            <div class="profile-switcher-row">
+              <span class="profile-active-label">Active: <strong id="profile-active-name">—</strong></span>
+              <div id="profile-switcher-btns" class="profile-switcher-btns"></div>
+            </div>
+            <div id="profile-switch-output" class="terminal hidden"></div>
+            <div id="profile-env-note" class="env-pickup-note hidden">
+              <span>To apply in all shell sessions, run:</span>
+              <code class="env-pickup-cmd">source /home/node/.env.sh</code>
+              <button class="env-pickup-copy">Copy</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Config tab: merged/global/local with inner scoped tabs -->
+        <div id="detail-tab-config" class="detail-tab-content hidden" data-tab-group="detail" data-for-tab="config">
+          <div class="config-section">
+            <!-- Toolbar: inner config tabs + verify button -->
+            <div class="config-tabs-toolbar">
+              <div class="config-tabs">
+                <!-- Inner tab buttons scoped with data-tab-group="config" -->
+                <button class="tab-btn active" data-tab-group="config" data-tab="merged">Merged</button>
+                <button class="tab-btn" data-tab-group="config" data-tab="global">Global</button>
+                <button class="tab-btn" data-tab-group="config" data-tab="local">Local</button>
+              </div>
+              <button id="verify-config-btn" class="verify-btn">Verify</button>
+            </div>
+
+            <div id="verify-results" class="verify-results hidden"></div>
+
+            <div id="tab-merged" class="tab-content active" data-tab-group="config" data-for-tab="merged">
+              <pre id="merged-config-view" class="config-view"></pre>
+            </div>
+
+            <div id="tab-global" class="tab-content hidden" data-tab-group="config" data-for-tab="global">
+              <div class="config-editor-toolbar">
+                <button id="global-edit-btn">Edit</button>
+                <button id="global-save-btn" class="hidden">Save</button>
+                <button id="global-cancel-btn" class="hidden">Cancel</button>
+                <button id="global-form-raw-btn" class="hidden form-raw-toggle-btn">Edit as JSON ⇄</button>
+              </div>
+              <!-- Read-only view -->
+              <pre id="global-config-view" class="config-view"></pre>
+              <!-- Structured form (shown in edit mode) -->
+              <div id="global-config-form-mount" class="config-form-mount hidden"></div>
+              <!-- Raw JSON editor -->
+              <textarea id="global-config-editor" class="config-editor hidden"></textarea>
+              <div id="global-config-msg" class="config-msg"></div>
+            </div>
+
+            <div id="tab-local" class="tab-content hidden" data-tab-group="config" data-for-tab="local">
+              <div class="config-editor-toolbar">
+                <button id="local-edit-btn">Edit</button>
+                <button id="local-save-btn" class="hidden">Save</button>
+                <button id="local-cancel-btn" class="hidden">Cancel</button>
+                <button id="local-form-raw-btn" class="hidden form-raw-toggle-btn">Edit as JSON ⇄</button>
+              </div>
+              <!-- Read-only view -->
+              <pre id="local-config-view" class="config-view"></pre>
+              <!-- Structured form (shown in edit mode) -->
+              <div id="local-config-form-mount" class="config-form-mount hidden"></div>
+              <!-- Raw JSON editor (hidden by default in edit mode) -->
+              <textarea id="local-config-editor" class="config-editor hidden"></textarea>
+              <!-- extra_commands warning for raw mode -->
+              <div class="extra-commands-warning hidden" id="extra-commands-warning">
+                Warning: extra_commands run as root during container initialization.
+              </div>
+              <div id="local-config-msg" class="config-msg"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Modules tab: scope-grouped module cards + inline JSON editor -->
+        <div id="detail-tab-modules" class="detail-tab-content hidden" data-tab-group="detail" data-for-tab="modules">
+          <div class="modules-toolbar">
+            <h3 class="section-heading">Modules</h3>
+            <button id="create-module-btn" class="new-btn">+ Create Module</button>
+          </div>
+          <div id="module-list" class="module-list">
+            <div class="loading">Loading modules…</div>
+          </div>
+          <div id="module-apply-output" class="module-apply-output hidden"></div>
+          <!-- Inline editor: appears when creating or editing a module -->
+          <div id="module-editor-panel" class="module-editor-panel hidden">
+            <div class="module-editor-header">
+              <span id="module-editor-title" class="module-editor-title">New Module</span>
+              <div class="module-editor-controls">
+                <label for="module-editor-name" class="module-name-label">Name</label>
+                <input type="text" id="module-editor-name" class="module-name-input" placeholder="my-module" autocomplete="off" />
+                <label for="module-editor-scope" class="module-name-label">Scope</label>
+                <select id="module-editor-scope" class="module-scope-select">
+                  <option value="user">user</option>
+                  <option value="project">project</option>
+                </select>
+                <button id="module-editor-save-btn">Save</button>
+                <button id="module-editor-cancel-btn">Cancel</button>
+              </div>
+            </div>
+            <!-- Structured form mode (default) -->
+            <div id="module-form-fields" class="module-form-fields">
+              <div class="form-field-row">
+                <label class="form-field-label">Description</label>
+                <input type="text" id="module-field-description" class="form-field-input" placeholder="One-line summary of this module" autocomplete="off" />
+              </div>
+              <div class="form-field-row">
+                <label class="form-field-label">Extra Domains <span class="form-field-hint">Hostnames allowed through the container firewall</span></label>
+                <div id="module-field-domains" class="chip-input-container" data-placeholder="packages.microsoft.com"></div>
+              </div>
+              <div class="form-field-row">
+                <label class="form-field-label">Extra Domain Suffixes <span class="form-field-hint">Wildcard domain suffixes</span></label>
+                <div id="module-field-suffixes" class="chip-input-container" data-placeholder="trafficmanager.net"></div>
+              </div>
+              <div class="form-field-row">
+                <label class="form-field-label">Extra APT Packages <span class="form-field-hint">Debian packages installed at init</span></label>
+                <div id="module-field-packages" class="chip-input-container" data-placeholder="curl"></div>
+              </div>
+              <details class="form-advanced">
+                <summary class="form-advanced-toggle">Advanced</summary>
+                <div class="form-advanced-body">
+                  <div class="form-field-row">
+                    <label class="form-field-label">Extra Commands</label>
+                    <div class="extra-commands-warning">⚠ These commands run as ROOT during container initialization — verify before saving.</div>
+                    <textarea id="module-field-commands" class="config-editor" style="min-height:80px;font-size:12px" placeholder="One shell command per line&#10;apt-get update &amp;&amp; apt-get install -y curl"></textarea>
+                  </div>
+                  <div class="form-field-row">
+                    <label class="form-field-label">Environment Variables</label>
+                    <div id="module-field-env" class="kv-input"></div>
+                  </div>
+                </div>
+              </details>
+              <div class="form-mode-toggle-row">
+                <button id="module-raw-toggle-btn" class="form-raw-toggle-btn">Edit as JSON ⇄</button>
+              </div>
+            </div>
+            <!-- Raw JSON mode -->
+            <div id="module-raw-fields" class="hidden">
+              <textarea id="module-editor-body" class="config-editor module-editor-body" placeholder='{"description": "My module", "extra_domains": []}'></textarea>
+              <div class="form-mode-toggle-row">
+                <button id="module-form-toggle-btn" class="form-raw-toggle-btn">Edit as Form ⇄</button>
+              </div>
+            </div>
+            <div id="module-editor-msg" class="config-msg"></div>
+          </div>
+        </div>
+
+        <!-- Inspect tab: structured docker inspect output -->
+        <div id="detail-tab-inspect" class="detail-tab-content hidden" data-tab-group="detail" data-for-tab="inspect">
+          <div id="inspect-content" class="inspect-content">
+            <div class="loading">Loading inspect data…</div>
+          </div>
+        </div>
+
+        <!-- Terminal tab: in-browser PTY via xterm.js + SSE+POST -->
+        <div id="detail-tab-terminal" class="detail-tab-content hidden" data-tab-group="detail" data-for-tab="terminal">
+          <!-- Sub-tab bar: Container | Local -->
+          <div class="terminal-subtab-bar">
+            <button class="terminal-subtab-btn active" data-subtab="container">Container</button>
+            <button class="terminal-subtab-btn" data-subtab="local">Local</button>
+          </div>
+
+          <!-- Container pane -->
+          <div id="term-subtab-container" class="terminal-subtab-pane">
+            <div class="terminal-panel-header">
+              <span id="terminal-status-label" class="terminal-status-label">Disconnected</span>
+              <div class="terminal-cmd-row">
+                <!-- Terminal header: session-control buttons only.
+                     Sync Config and Destroy are not present here; those actions
+                     live in the Overview tab command panel. (PDL-003) -->
+                <button id="terminal-connect-btn" class="cmd-btn cmd-terminal">▶ Connect</button>
+                <button id="terminal-disconnect-btn" class="cmd-btn cmd-stop hidden">✕ Disconnect</button>
+                <button id="terminal-popout-btn" class="cmd-btn" title="Open in native terminal">↗ Popout</button>
+                <button id="term-stop-start-btn" class="cmd-btn cmd-stop" data-terminal="1">⏹ Stop</button>
+              </div>
+            </div>
+            <div id="term-profile-row" class="terminal-profile-row hidden">
+              <span class="terminal-profile-label">Profile:</span>
+              <div id="term-profile-btns" class="terminal-profile-btns"></div>
+            </div>
+            <div id="term-env-note" class="env-pickup-note hidden">
+              <span>To apply in all shell sessions, run:</span>
+              <code class="env-pickup-cmd">source /home/node/.env.sh</code>
+              <button class="env-pickup-copy">Copy</button>
+            </div>
+            <div id="terminal-xterm-fallback" class="terminal-fallback hidden">
+              xterm.js failed to load. Check your network connection and reload the page.
+            </div>
+            <div id="terminal-xterm-container" class="terminal-xterm-container"></div>
+          </div>
+
+          <!-- Local pane: host shell -->
+          <div id="term-subtab-local" class="terminal-subtab-pane hidden">
+            <div class="terminal-panel-header">
+              <span id="local-term-status" class="terminal-status-label">Disconnected</span>
+              <div class="terminal-cmd-row">
+                <button id="local-term-connect-btn" class="cmd-btn cmd-terminal">▶ Connect</button>
+                <button id="local-term-disconnect-btn" class="cmd-btn cmd-stop hidden">✕ Disconnect</button>
+              </div>
+            </div>
+            <div id="local-terminal-xterm-container" class="terminal-xterm-container"></div>
+          </div>
+        </div>
+
+        <!-- Files tab: container filesystem browser -->
+        <div id="detail-tab-files" class="detail-tab-content hidden" data-tab-group="detail" data-for-tab="files">
+          <div class="files-browser-header">
+            <span id="files-breadcrumb" class="files-breadcrumb">/workspace</span>
+            <button id="files-home-btn" class="files-home-btn" title="Go to /workspace">⌂</button>
+          </div>
+          <div id="files-content" class="files-content">
+            <div class="loading">Select a container to browse its files.</div>
+          </div>
+        </div>
+
+        <!-- Refs tab: copy host directories into the container as read-only references -->
+        <div id="detail-tab-refs" class="detail-tab-content hidden" data-tab-group="detail" data-for-tab="refs">
+          <div class="refs-toolbar">
+            <h3 class="section-heading">References</h3>
+          </div>
+          <p class="refs-hint">References are read-only copies of host directories available at <code>/workspace/refs/&lt;name&gt;</code> inside the container.</p>
+          <div id="refs-list" class="refs-list">
+            <div class="loading">Select a running container to view refs.</div>
+          </div>
+          <div class="refs-add-section">
+            <h4 class="section-heading">Add Reference</h4>
+            <div class="form-field-row">
+              <label class="form-field-label">Host Directory</label>
+              <div class="folder-input-row">
+                <input type="text" id="ref-dir-input" class="form-field-input" placeholder="/path/to/directory" autocomplete="off" />
+                <button id="ref-browse-btn" class="browse-btn">Browse…</button>
+              </div>
+              <div id="ref-dir-tree" class="folder-browser-tree hidden"></div>
+            </div>
+            <div class="form-field-row refs-refresh-row">
+              <label class="form-field-label checkbox-label">
+                <input type="checkbox" id="ref-refresh-checkbox" /> Overwrite if already exists (<code>--refresh</code>)
+              </label>
+            </div>
+            <button id="ref-add-btn" class="cmd-btn">Add Reference</button>
+          </div>
+          <div id="ref-add-output" class="module-apply-output hidden"></div>
+        </div>
+      </section>
+
+      <!-- New container panel: project path + language, then streams claudebox init -->
+      <section id="new-panel" class="panel hidden">
+        <h2>Create New Container</h2>
+        <p class="new-panel-hint" id="new-panel-hint">ClaudeBox will run <code>claudebox init</code> in the specified directory. Make sure the directory exists on your host machine.</p>
+        <form id="new-container-form" class="new-container-form">
+          <!-- Mode toggle -->
+          <div class="new-mode-toggle">
+            <button type="button" class="new-mode-btn active" data-mode="existing">Existing Folder</button>
+            <button type="button" class="new-mode-btn" data-mode="clone">Clone from Git</button>
+          </div>
+
+          <!-- Existing folder section -->
+          <div id="new-existing-section" class="form-row">
+            <label for="new-project-dir">Project directory</label>
+            <div class="path-input-row">
+              <input type="text" id="new-project-dir" placeholder="/home/you/myproject" autocomplete="off" />
+              <button type="button" id="new-browse-btn" class="browse-btn">Browse…</button>
+            </div>
+            <div id="new-folder-tree" class="folder-tree hidden"></div>
+            <div id="new-dir-error" class="path-error hidden"></div>
+          </div>
+
+          <!-- Clone from Git section -->
+          <div id="new-clone-section" class="hidden">
+            <div class="form-row">
+              <label for="new-clone-url">Git repository URL</label>
+              <input type="text" id="new-clone-url" placeholder="https://github.com/you/repo" autocomplete="off" />
+            </div>
+            <div class="form-row">
+              <label for="new-clone-parent">Clone into directory</label>
+              <div class="path-input-row">
+                <input type="text" id="new-clone-parent" placeholder="/home/you/projects" autocomplete="off" />
+                <button type="button" id="new-clone-browse-btn" class="browse-btn">Browse…</button>
+              </div>
+              <div id="new-clone-folder-tree" class="folder-tree hidden"></div>
+            </div>
+            <div class="form-row">
+              <label for="new-clone-name">Folder name</label>
+              <input type="text" id="new-clone-name" placeholder="repo" autocomplete="off" />
+              <div id="new-clone-preview" class="clone-path-preview"></div>
+            </div>
+            <div class="new-form-section">
+              <details class="new-form-accordion" id="new-clone-auth-accordion">
+                <summary class="new-form-accordion-toggle">Authentication <span class="form-field-hint" style="text-transform:none;letter-spacing:0;font-weight:400"> — optional, for private repositories</span></summary>
+                <div class="new-form-accordion-body">
+                  <div class="form-row">
+                    <label for="new-clone-username">Username</label>
+                    <input type="text" id="new-clone-username" placeholder="your-username or org" autocomplete="off" />
+                  </div>
+                  <div class="form-row">
+                    <label for="new-clone-token">Password / Personal Access Token</label>
+                    <input type="password" id="new-clone-token" placeholder="PAT or password" autocomplete="new-password" />
+                  </div>
+                </div>
+              </details>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>Language <span class="form-field-hint">Select one or more — combinations supported</span></label>
+            <div id="new-language-group" class="lang-toggle-group">
+              <button type="button" class="lang-toggle-btn" data-lang="node">Node.js</button>
+              <button type="button" class="lang-toggle-btn" data-lang="python">Python</button>
+              <button type="button" class="lang-toggle-btn" data-lang="dotnet">.NET</button>
+              <button type="button" class="lang-toggle-btn" data-lang="go">Go</button>
+              <button type="button" class="lang-toggle-btn" data-lang="rust">Rust</button>
+              <button type="button" class="lang-toggle-btn" data-lang="java">Java</button>
+              <button type="button" class="lang-toggle-btn" data-lang="none">None</button>
+            </div>
+            <div class="form-hint">Leave unselected for auto-detect from project files</div>
+          </div>
+
+          <!-- Modules accordion -->
+          <div class="new-form-section">
+            <details class="new-form-accordion" id="new-modules-accordion">
+              <summary class="new-form-accordion-toggle">Modules <span class="form-field-hint" style="text-transform:none;letter-spacing:0;font-weight:400"> — select which to apply</span></summary>
+              <div class="new-form-accordion-body">
+                <div id="new-module-checklist" class="module-checklist">
+                  <div class="loading">Loading modules…</div>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <!-- Advanced config accordion -->
+          <div class="new-form-section">
+            <details class="new-form-accordion" id="new-advanced-accordion">
+              <summary class="new-form-accordion-toggle">Advanced Config</summary>
+              <div class="new-form-accordion-body">
+                <div id="new-advanced-form-mount"></div>
+              </div>
+            </details>
+          </div>
+
+          <div class="form-actions" style="margin-top:16px">
+            <button type="submit" id="init-btn">Initialize Container</button>
+            <button type="button" id="cancel-new-btn">Cancel</button>
+          </div>
+          <div id="new-container-msg" class="config-msg"></div>
+        </form>
+        <div id="init-output" class="terminal hidden"></div>
+        <div id="init-result-actions" class="init-result-actions hidden">
+          <button type="button" id="init-back-btn" class="hidden">← Back</button>
+          <button type="button" id="init-open-btn" class="hidden">Open Container →</button>
+        </div>
+      </section>
+
+      <!-- Global Module Library panel: create/manage user-scope modules independent of any container -->
+      <section id="modules-panel" class="panel hidden">
+        <div class="modules-toolbar">
+          <h2>Module Library</h2>
+          <button id="global-create-module-btn" class="new-btn">+ Create Module</button>
+        </div>
+        <p class="new-panel-hint">User-scope modules are available across all containers. Builtin modules are read-only.</p>
+        <div id="global-module-list" class="module-list">
+          <div class="loading">Loading modules…</div>
+        </div>
+        <div id="global-module-editor-panel" class="module-editor-panel hidden">
+          <div class="module-editor-header">
+            <span id="global-module-editor-title" class="module-editor-title">New Module</span>
+            <div class="module-editor-controls">
+              <label for="global-module-editor-name" class="module-name-label">Name</label>
+              <input type="text" id="global-module-editor-name" class="module-name-input" placeholder="my-module" autocomplete="off" />
+              <button id="global-module-editor-save-btn">Save</button>
+              <button id="global-module-editor-cancel-btn">Cancel</button>
+            </div>
+          </div>
+          <!-- Structured form mode (default) -->
+          <div id="global-module-form-fields" class="module-form-fields">
+            <div class="form-field-row">
+              <label class="form-field-label">Description</label>
+              <input type="text" id="global-module-field-description" class="form-field-input" placeholder="One-line summary of this module" autocomplete="off" />
+            </div>
+            <div class="form-field-row">
+              <label class="form-field-label">Extra Domains <span class="form-field-hint">Hostnames allowed through the container firewall</span></label>
+              <div id="global-module-field-domains" class="chip-input-container" data-placeholder="packages.microsoft.com"></div>
+            </div>
+            <div class="form-field-row">
+              <label class="form-field-label">Extra Domain Suffixes <span class="form-field-hint">Wildcard domain suffixes</span></label>
+              <div id="global-module-field-suffixes" class="chip-input-container" data-placeholder="trafficmanager.net"></div>
+            </div>
+            <div class="form-field-row">
+              <label class="form-field-label">Extra APT Packages <span class="form-field-hint">Debian packages installed at init</span></label>
+              <div id="global-module-field-packages" class="chip-input-container" data-placeholder="curl"></div>
+            </div>
+            <details class="form-advanced">
+              <summary class="form-advanced-toggle">Advanced</summary>
+              <div class="form-advanced-body">
+                <div class="form-field-row">
+                  <label class="form-field-label">Extra Commands</label>
+                  <div class="extra-commands-warning">⚠ These commands run as ROOT during container initialization — verify before saving.</div>
+                  <textarea id="global-module-field-commands" class="config-editor" style="min-height:80px;font-size:12px" placeholder="One shell command per line&#10;apt-get update &amp;&amp; apt-get install -y curl"></textarea>
+                </div>
+                <div class="form-field-row">
+                  <label class="form-field-label">Environment Variables</label>
+                  <div id="global-module-field-env" class="kv-input"></div>
+                </div>
+              </div>
+            </details>
+            <div class="form-mode-toggle-row">
+              <button id="global-module-raw-toggle-btn" class="form-raw-toggle-btn">Edit as JSON ⇄</button>
+            </div>
+          </div>
+          <!-- Raw JSON mode -->
+          <div id="global-module-raw-fields" class="hidden">
+            <textarea id="global-module-editor-body" class="config-editor module-editor-body" placeholder='{"description": "My module", "extra_domains": []}'></textarea>
+            <div class="form-mode-toggle-row">
+              <button id="global-module-form-toggle-btn" class="form-raw-toggle-btn">Edit as Form ⇄</button>
+            </div>
+          </div>
+          <div id="global-module-editor-msg" class="config-msg"></div>
+        </div>
+      </section>
+
+      <!-- Settings panel: global config + GUI info -->
+      <section id="settings-panel" class="panel hidden">
+        <div class="settings-header">
+          <h2>Settings</h2>
+        </div>
+
+        <div class="settings-section">
+          <h3 class="section-heading">Global Configuration</h3>
+          <p class="new-panel-hint">Applied to all containers. Project-level <code>.claudebox.json</code> overrides these values.</p>
+          <div class="settings-global-form">
+            <div id="settings-config-form-mount"></div>
+            <div class="form-mode-toggle-row">
+              <button id="settings-raw-toggle-btn" class="form-raw-toggle-btn">Edit as JSON ⇄</button>
+            </div>
+          </div>
+          <!-- Raw JSON mode -->
+          <div id="settings-raw-fields" class="hidden">
+            <textarea id="settings-config-editor" class="config-editor" style="min-height:200px"></textarea>
+            <div class="form-mode-toggle-row">
+              <button id="settings-form-toggle-btn" class="form-raw-toggle-btn">Edit as Form ⇄</button>
+            </div>
+          </div>
+          <div class="settings-actions">
+            <button id="settings-save-btn" class="settings-save-btn">Save Global Config</button>
+            <span id="settings-msg" class="config-msg"></span>
+          </div>
+        </div>
+
+        <div class="settings-section">
+          <h3 class="section-heading">GUI Preferences</h3>
+          <div class="form-field-row">
+            <label class="form-field-label">Terminal App
+              <span class="form-field-hint">Application launched when opening a container terminal</span>
+            </label>
+            <select id="settings-terminal-app" class="form-field-select">
+              <option value="auto">Auto-detect</option>
+              <option value="pwsh">PowerShell 7 (pwsh.exe)</option>
+              <option value="powershell">PowerShell 5 (powershell.exe)</option>
+              <option value="windows-terminal">Windows Terminal (wt.exe)</option>
+              <option value="cmd">Command Prompt (cmd.exe)</option>
+              <option value="bash">Bash / xterm</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="settings-section settings-info-section">
+          <h3 class="section-heading">About</h3>
+          <div class="detail-grid">
+            <div class="detail-row"><span class="label">GUI</span><span>ClaudeBox Dashboard</span></div>
+            <div class="detail-row"><span class="label">Config</span><span id="settings-info-global-path" style="font-family:monospace;font-size:12px;word-break:break-all">~/.claudebox/config.json</span></div>
+            <div class="detail-row"><span class="label">Registry</span><span style="font-family:monospace;font-size:12px">~/.claudebox/registry.json</span></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="welcome-panel" class="panel">
+        <div class="welcome">
+          <h2>ClaudeBox Dashboard</h2>
+          <p>Select a container from the sidebar to view its details and configuration,<br>or click <strong>+ New</strong> to create a new container.</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- File viewer modal: hidden by default, shown when a file is clicked in the Files tab -->
+  <div id="file-viewer-modal" class="file-viewer-modal hidden" role="dialog" aria-modal="true">
+    <div class="file-viewer-backdrop"></div>
+    <div class="file-viewer-card">
+      <div class="file-viewer-header">
+        <span id="file-viewer-path" class="file-viewer-path"></span>
+        <span id="file-viewer-size" class="file-viewer-size"></span>
+        <button id="file-viewer-close-btn" class="file-viewer-close-btn" title="Close (Esc)">✕</button>
+      </div>
+      <div class="file-viewer-body">
+        <pre id="file-viewer-content" class="file-viewer-content"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

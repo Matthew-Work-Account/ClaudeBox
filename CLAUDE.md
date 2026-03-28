@@ -125,3 +125,17 @@ user's `~/.nuget/packages` in its default file-sharing scope. A direct
 bind-mount of that path silently fails on non-Linux hosts. The
 `~/.claudebox/` directory sits under the user home, which Docker Desktop
 exposes by default.
+
+## Codebase Index
+
+| Path                  | Contents (WHAT)                                               | Read When (WHEN)                                         |
+| --------------------- | ------------------------------------------------------------- | -------------------------------------------------------- |
+| `claudebox.sh`        | Main CLI: all subcommands, registry helpers, container logic  | Adding/changing CLI commands, init/destroy flow          |
+| `install.sh`          | Host installer: copies files to CLAUDEBOX_HOME                | Changing what gets installed or install locations        |
+| `lib/config.sh`       | Config merge logic (base -> global -> local)                  | Understanding or changing config merge semantics         |
+| `gui/`                | Python web dashboard: server, API, static SPA                 | Working on the GUI feature; see `gui/CLAUDE.md`          |
+| `gui/README.md`       | GUI architecture decisions, invariants, key tradeoffs         | Understanding GUI design before modifying it             |
+| `languages/`          | Per-language JSON configs (domains, packages, mounts)         | Adding a language or changing language-specific settings |
+| `modules/`            | Optional module JSON definitions (e.g. SqlServer)             | Adding or modifying optional container modules           |
+| `.devcontainer/`      | Devcontainer setup scripts run inside the container           | Changing container init, language install, env setup     |
+| `README.md`           | User-facing setup and usage guide                             | Understanding user workflows before changing CLI UX      |
