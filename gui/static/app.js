@@ -3203,10 +3203,19 @@ function onTerminalTabActivate() {
     return;
   }
 
-  // If already connected to this container, do nothing
-  if (_termContainer === selectedContainer.name && _termXterm) return;
+  // If already connected (SSE active) to this container, do nothing
+  if (_termContainer === selectedContainer.name && _termXterm && _termEventSource) return;
 
-  // Disconnect previous if switching container
+  // If xterm exists for this container but SSE is closed, reconnect the stream
+  if (_termContainer === selectedContainer.name && _termXterm && !_termEventSource) {
+    statusLabel.textContent = "Connecting...";
+    document.getElementById("terminal-connect-btn").classList.add("hidden");
+    document.getElementById("terminal-disconnect-btn").classList.remove("hidden");
+    _termReconnectSSE(selectedContainer.name, statusLabel);
+    return;
+  }
+
+  // Switching to a different container — full teardown of previous
   _termDisconnect();
 
   container.innerHTML = "";
@@ -3299,15 +3308,45 @@ function onTerminalTabActivate() {
   };
 }
 
-function _termDisconnect() {
+// Reconnect: reopen SSE stream on an existing xterm instance (preserving scrollback).
+function _termReconnectSSE(containerName, statusLabel) {
+  _termEventSource = new EventSource(
+    "/api/containers/" + encodeURIComponent(containerName) + "/terminal/stream"
+  );
+  _termEventSource.onopen = function () {
+    statusLabel.textContent = "Connected";
+    if (_termFitAddon) _termFitAddon.fit();
+  };
+  _termEventSource.onmessage = function (evt) {
+    try {
+      var msg = JSON.parse(evt.data);
+      if (msg.data && _termXterm) {
+        _termXterm.write(_b64ToU8(msg.data));
+        _termXterm.scrollToBottom();
+      }
+    } catch (e) {}
+  };
+  _termEventSource.onerror = function () {
+    statusLabel.textContent = "Disconnected";
+    document.getElementById("terminal-connect-btn").classList.remove("hidden");
+    document.getElementById("terminal-disconnect-btn").classList.add("hidden");
+  };
+}
+
+// Soft disconnect: close the SSE stream but keep xterm instance and PTY alive.
+// Reconnecting will reuse the existing xterm scrollback and PTY session.
+function _termSoftDisconnect() {
   if (_termEventSource) {
     _termEventSource.close();
     _termEventSource = null;
   }
-  if (_termContainer) {
-    fetch("/api/containers/" + encodeURIComponent(_termContainer) + "/terminal",
-      { method: "DELETE" }).catch(function () {});
-  }
+}
+
+// Full teardown: dispose xterm, close SSE. Used when switching containers.
+// Does NOT send DELETE — the PTY session stays alive for dashboard tiles
+// and future reconnection. The idle reaper handles cleanup.
+function _termDisconnect() {
+  _termSoftDisconnect();
   if (_termXterm) {
     if (_termXterm._ro) _termXterm._ro.disconnect();
     if (_termXterm._onResizeDisposable) _termXterm._onResizeDisposable.dispose();
@@ -3324,7 +3363,7 @@ document.getElementById("terminal-connect-btn").addEventListener("click", functi
 });
 
 document.getElementById("terminal-disconnect-btn").addEventListener("click", function () {
-  _termDisconnect();
+  _termSoftDisconnect();
   document.getElementById("terminal-status-label").textContent = "Disconnected";
   document.getElementById("terminal-connect-btn").classList.remove("hidden");
   document.getElementById("terminal-disconnect-btn").classList.add("hidden");
@@ -3455,7 +3494,17 @@ document.getElementById("term-stop-start-btn").addEventListener("click", functio
 function _onLocalTermSubtabActivate() {
   const container = document.getElementById("local-terminal-xterm-container");
   if (!container) return;
-  if (_localTermXterm) return; // already open
+  // If SSE is already active, do nothing
+  if (_localTermXterm && _localTermEventSource) return;
+
+  // If xterm exists but SSE is closed, reconnect the stream
+  if (_localTermXterm && !_localTermEventSource) {
+    document.getElementById("local-term-status").textContent = "Connecting...";
+    document.getElementById("local-term-connect-btn").classList.add("hidden");
+    document.getElementById("local-term-disconnect-btn").classList.remove("hidden");
+    _localTermReconnectSSE();
+    return;
+  }
 
   document.getElementById("local-term-status").textContent = "Connecting...";
   document.getElementById("local-term-connect-btn").classList.add("hidden");
@@ -3535,12 +3584,40 @@ function _onLocalTermSubtabActivate() {
   };
 }
 
-function _localTermDisconnect() {
+// Reconnect: reopen SSE stream on an existing local xterm instance.
+function _localTermReconnectSSE() {
+  _localTermEventSource = new EventSource("/api/local-terminal/stream");
+  _localTermEventSource.onopen = function () {
+    document.getElementById("local-term-status").textContent = "Connected";
+    if (_localTermFitAddon) _localTermFitAddon.fit();
+  };
+  _localTermEventSource.onmessage = function (evt) {
+    try {
+      var msg = JSON.parse(evt.data);
+      if (msg.data && _localTermXterm) {
+        _localTermXterm.write(_b64ToU8(msg.data));
+        _localTermXterm.scrollToBottom();
+      }
+    } catch (e) {}
+  };
+  _localTermEventSource.onerror = function () {
+    document.getElementById("local-term-status").textContent = "Disconnected";
+    document.getElementById("local-term-connect-btn").classList.remove("hidden");
+    document.getElementById("local-term-disconnect-btn").classList.add("hidden");
+  };
+}
+
+// Soft disconnect: close the SSE stream but keep xterm instance and PTY alive.
+function _localTermSoftDisconnect() {
   if (_localTermEventSource) {
     _localTermEventSource.close();
     _localTermEventSource = null;
   }
-  fetch("/api/local-terminal", { method: "DELETE" }).catch(function () {});
+}
+
+// Full teardown: dispose xterm, close SSE. Does NOT send DELETE.
+function _localTermDisconnect() {
+  _localTermSoftDisconnect();
   if (_localTermXterm) {
     if (_localTermXterm._ro) _localTermXterm._ro.disconnect();
     if (_localTermXterm._onResizeDisposable) _localTermXterm._onResizeDisposable.dispose();
@@ -3577,7 +3654,7 @@ document.getElementById("local-term-connect-btn").addEventListener("click", func
 });
 
 document.getElementById("local-term-disconnect-btn").addEventListener("click", function () {
-  _localTermDisconnect();
+  _localTermSoftDisconnect();
   document.getElementById("local-term-status").textContent = "Disconnected";
   document.getElementById("local-term-connect-btn").classList.remove("hidden");
   document.getElementById("local-term-disconnect-btn").classList.add("hidden");
