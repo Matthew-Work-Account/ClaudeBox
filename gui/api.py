@@ -8,6 +8,7 @@ sourcing lib/config.sh via subprocess — ensures the GUI reflects the
 authoritative bash merge semantics without reimplementing them (DL-005,
 RISK-004). Atomic JSON writes use tempfile+os.replace to avoid partial writes.
 """
+import collections
 import json
 import os
 import queue
@@ -17,6 +18,9 @@ import subprocess
 import tempfile
 import threading
 from datetime import datetime, timezone
+
+# Maximum bytes of PTY output to buffer per session for replay on new subscribers.
+_SCROLLBACK_MAX = 128 * 1024  # 128 KiB
 
 _MODULE_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 
@@ -1220,6 +1224,7 @@ def create_terminal_session(container_name):
                     "lock": threading.Lock(),
                     "subscribers": [],
                     "last_activity": 0,
+                    "scrollback": bytearray(),
                 }
             else:
                 # Pipe fallback for Windows where pty is unavailable.
@@ -1238,6 +1243,7 @@ def create_terminal_session(container_name):
                     "lock": threading.Lock(),
                     "subscribers": [],
                     "last_activity": 0,
+                    "scrollback": bytearray(),
                 }
         except Exception as e:
             return {"error": str(e)}
@@ -1314,6 +1320,12 @@ def _start_broadcaster(container_name, session):
 
             if chunk:
                 session["last_activity"] = _time.time()
+                # Append to scrollback buffer (capped at _SCROLLBACK_MAX).
+                sb = session.get("scrollback")
+                if sb is not None:
+                    sb.extend(chunk)
+                    if len(sb) > _SCROLLBACK_MAX:
+                        del sb[:len(sb) - _SCROLLBACK_MAX]
                 with _terminal_sessions_lock:
                     subs = list(session.get("subscribers", []))
                 for q in subs:
@@ -1343,12 +1355,22 @@ def subscribe_terminal(container_name):
     Returns a queue.Queue(maxsize=1024). The caller (SSE handler) dequeues chunks
     and writes them to the HTTP response. Call unsubscribe_terminal() in a finally
     block to avoid stale queue references in session["subscribers"] (DL-006).
+
+    Pre-fills the queue with the session's scrollback buffer so the subscriber
+    immediately sees the current terminal state (replaces tmux redraw-on-attach).
     Returns an empty queue if no session exists for container_name.
     """
     q = queue.Queue(maxsize=1024)
     with _terminal_sessions_lock:
         session = _terminal_sessions.get(container_name)
         if session is not None:
+            # Replay scrollback so the new subscriber sees existing terminal state.
+            sb = session.get("scrollback")
+            if sb:
+                try:
+                    q.put_nowait(bytes(sb))
+                except queue.Full:
+                    pass
             session["subscribers"].append(q)
     return q
 
@@ -1528,6 +1550,7 @@ def create_local_terminal_session():
                     "proc": proc,
                     "master_fd": master_fd,
                     "lock": threading.Lock(),
+                    "scrollback": bytearray(),
                 }
             else:
                 _preexec = os.setsid if hasattr(os, "setsid") else None
@@ -1544,6 +1567,7 @@ def create_local_terminal_session():
                     "proc": proc,
                     "master_fd": None,
                     "lock": threading.Lock(),
+                    "scrollback": bytearray(),
                 }
         except Exception as exc:
             return {"error": str(exc)}
@@ -1554,17 +1578,20 @@ def read_local_terminal(timeout=0.05):
     """Read available bytes from the local terminal session.
 
     Returns bytes, b'' when nothing available, or None if session absent.
+    Also appends non-empty reads to the session scrollback buffer.
     """
     session = _local_term_session.get("session")
     if not session:
         return None
+    chunk = None
     if session["master_fd"] is not None:
         import select
         try:
             r, _, _ = select.select([session["master_fd"]], [], [], timeout)
             if r:
-                return os.read(session["master_fd"], 4096)
-            return b""
+                chunk = os.read(session["master_fd"], 4096)
+            else:
+                return b""
         except OSError:
             return None
     else:
@@ -1573,9 +1600,16 @@ def read_local_terminal(timeout=0.05):
             fd = session["proc"].stdout.fileno()
             fl = fcntl.fcntl(fd, fcntl.F_GETFL)
             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            return session["proc"].stdout.read(4096) or b""
+            chunk = session["proc"].stdout.read(4096) or b""
         except (OSError, AttributeError):
             return b""
+    if chunk:
+        sb = session.get("scrollback")
+        if sb is not None:
+            sb.extend(chunk)
+            if len(sb) > _SCROLLBACK_MAX:
+                del sb[:len(sb) - _SCROLLBACK_MAX]
+    return chunk
 
 
 def write_local_terminal(data):
@@ -1592,6 +1626,15 @@ def write_local_terminal(data):
         return {"ok": True}
     except OSError as exc:
         return {"error": str(exc)}
+
+
+def get_local_terminal_scrollback():
+    """Return the local terminal scrollback buffer as bytes, or b'' if no session."""
+    session = _local_term_session.get("session")
+    if not session:
+        return b""
+    sb = session.get("scrollback")
+    return bytes(sb) if sb else b""
 
 
 def resize_terminal(container_name, cols, rows):

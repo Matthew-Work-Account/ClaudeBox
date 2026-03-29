@@ -577,6 +577,14 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 
+        # Replay scrollback so new subscribers see existing terminal state.
+        sb = api.get_local_terminal_scrollback()
+        if sb:
+            encoded = base64.b64encode(sb).decode()
+            msg = json.dumps({"data": encoded})
+            self.wfile.write(f"data: {msg}\n\n".encode())
+            self.wfile.flush()
+
         q = queue.Queue(maxsize=256)
         stop_evt = threading.Event()
 
