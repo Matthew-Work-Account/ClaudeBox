@@ -24,6 +24,7 @@ RUN echo "==> Installing system packages..." && \
     dnsmasq \
     dnsutils \
     jq \
+    tmux \
     python3 \
     python3-pip \
     ca-certificates \
@@ -51,6 +52,35 @@ COPY init-firewall.sh /usr/local/bin/init-firewall.sh
 RUN chmod +x /usr/local/bin/install-language.sh /usr/local/bin/install-dotnet.sh /usr/local/bin/init-firewall.sh
 
 USER ${USERNAME}
+
+RUN cat > /home/node/.zshrc << 'ZSHRC'
+# ClaudeBox default zsh configuration
+
+# --- Environment ---
+[ -f ~/.env.sh ] && source ~/.env.sh
+
+# --- History ---
+HISTSIZE=10000
+SAVEHIST=10000
+HISTFILE=~/.zsh_history
+setopt HIST_IGNORE_DUPS HIST_IGNORE_SPACE SHARE_HISTORY INC_APPEND_HISTORY
+
+# --- Completion ---
+autoload -Uz compinit && compinit
+
+# --- Prompt ---
+autoload -U colors && colors
+PROMPT='%F{cyan}%n%f:%F{blue}%~%f %# '
+
+# --- Aliases ---
+alias ll='ls -la --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+
+# --- User customization ---
+# Drop a .zshrc.local in your home dir (via extra_commands) for personal config
+[ -f ~/.zshrc.local ] && source ~/.zshrc.local
+ZSHRC
 
 ENV PATH=/home/node/.local/bin:${PATH} \
     HOME=/home/node

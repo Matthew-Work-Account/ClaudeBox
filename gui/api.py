@@ -954,7 +954,7 @@ def open_terminal(name, terminal_type="auto"):
     import platform
     import shutil as _shutil
 
-    docker_cmd = "docker exec -it -u node " + shlex.quote(name) + " zsh"
+    docker_cmd = "docker exec -it -u node -e TERM=xterm-256color " + shlex.quote(name) + " tmux new-session -A -s claudebox"
     system = platform.system().lower()
     release = platform.uname().release.lower()
     is_wsl = system == "linux" and "microsoft" in release
@@ -1169,7 +1169,10 @@ def create_terminal_session(container_name):
             # Stale session — clean up
             _cleanup_session(container_name)
 
-        cmd = ["docker", "exec", "-it", "-u", "node", container_name, "zsh"]
+        _reg = _load_registry()
+        _proj = _reg.get(container_name, {}).get("project_dir", "/workspace")
+        cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color", container_name,
+               "tmux", "new-session", "-A", "-s", "claudebox", "-c", _proj]
         try:
             if HAS_PTY:
                 master_fd, slave_fd = _pty_mod.openpty()

@@ -442,7 +442,7 @@ cmd_init() {
         echo "Container '${container_name}' is ready. Run 'claudebox' to attach."
     else
         echo "Attaching to container..."
-        docker exec -it --user node -w "/workspace/${cwd_leaf}" "$container_name" zsh
+        docker exec -it --user node -e TERM=xterm-256color "$container_name" tmux new-session -A -s claudebox -c "/workspace/${cwd_leaf}"
     fi
 }
 
@@ -470,7 +470,7 @@ cmd_resume() {
         docker start "$container_name" > /dev/null
     fi
 
-    docker exec -it --user node -w "/workspace/${cwd_leaf}" "$container_name" zsh
+    docker exec -it --user node -e TERM=xterm-256color "$container_name" tmux new-session -A -s claudebox -c "/workspace/${cwd_leaf}"
 }
 
 # --- Subcommand: stop ---
