@@ -1169,7 +1169,7 @@ def create_terminal_session(container_name):
             # Stale session — clean up
             _cleanup_session(container_name)
 
-        _reg = _load_registry()
+        _reg = _read_json_file(_REGISTRY_PATH).get("containers", {})
         _proj = _reg.get(container_name, {}).get("project_dir", "/workspace")
         cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color", container_name,
                "tmux", "new-session", "-A", "-s", "claudebox", "-c", _proj]

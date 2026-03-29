@@ -161,6 +161,20 @@ check_docker() {
     fi
 }
 
+# --- Shell attach helper ---
+
+# Attach to container shell. Uses tmux if available, falls back to zsh.
+cb_attach_shell() {
+    local container_name="$1"
+    local workdir="$2"
+    if docker exec "$container_name" which tmux > /dev/null 2>&1; then
+        docker exec -it --user node -e TERM=xterm-256color "$container_name" \
+            tmux new-session -A -s claudebox -c "$workdir"
+    else
+        docker exec -it --user node -w "$workdir" "$container_name" zsh
+    fi
+}
+
 # --- Claude config copy ---
 
 cb_copy_claude_config() {
@@ -455,7 +469,7 @@ cmd_init() {
         echo "Container '${container_name}' is ready. Run 'claudebox' to attach."
     else
         echo "Attaching to container..."
-        docker exec -it --user node -e TERM=xterm-256color "$container_name" tmux new-session -A -s claudebox -c "/workspace/${cwd_leaf}"
+        cb_attach_shell "$container_name" "/workspace/${cwd_leaf}"
     fi
 }
 
@@ -483,7 +497,7 @@ cmd_resume() {
         docker start "$container_name" > /dev/null
     fi
 
-    docker exec -it --user node -e TERM=xterm-256color "$container_name" tmux new-session -A -s claudebox -c "/workspace/${cwd_leaf}"
+    cb_attach_shell "$container_name" "/workspace/${cwd_leaf}"
 }
 
 # --- Subcommand: stop ---
