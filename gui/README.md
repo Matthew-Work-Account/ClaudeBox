@@ -187,16 +187,7 @@ via the existing `POST /api/config/local` endpoint.
 | GET    | `/api/containers/<name>/terminal/stream` | SSE stream of PTY output |
 | POST   | `/api/containers/<name>/terminal/input` | Write keystrokes to PTY |
 | DELETE | `/api/containers/<name>/terminal` | Close PTY session |
-
-## Terminal Session Lifecycle
-
-1. Tab click -> `onTerminalTabActivate()` checks `window.Terminal` (CDN load guard).
-2. Calls `GET /api/containers/<name>/terminal/stream` (SSE).
-3. `create_terminal_session` in `api.py` spawns `docker exec -it zsh`; reuses if alive.
-4. Output bytes flow: PTY master fd -> SSE `data:` frames -> xterm.js `write()`.
-5. Input: `onData` callback -> `POST .../terminal/input` -> write to PTY master fd.
-6. Disconnect: `DELETE .../terminal` closes fd and kills the process group.
-7. On server shutdown, `signal.SIGTERM` and `atexit` handlers close all sessions (R-005).
+| PATCH  | `/api/containers/<name>/pin`      | Set or clear the `pinned` field in registry |
 
 ## Running
 
@@ -209,3 +200,84 @@ python3 -m gui --port 8080
 ```
 
 The normal entry point is `claudebox gui [--port <port>]`.
+
+## Dashboard Panel (Pinned Container Terminals)
+
+**Dashboard as top-level panel (DL-001)**: The dashboard is a sixth top-level panel
+activated via `showPanel("dashboard")`, following the same show/hide pattern as the
+detail, new-container, modules, settings, and welcome panels. No routing library is
+required.
+
+**Pin state in registry (DL-005)**: Pin state is stored as a `pinned` boolean field
+per container entry in `~/.claudebox/registry.json`. The registry is the authoritative
+per-container store; adding `pinned: true` is consistent with how all other container
+state is managed. `PATCH /api/containers/<name>/pin` sets or clears the field atomically.
+Automatic cleanup: when `claudebox destroy` removes a registry entry the pin is gone for
+free. localStorage was rejected — it is browser-specific and not durable across data clears.
+
+**CSS auto-fill grid (DL-008)**: `.dashboard-grid` uses
+`grid-template-columns: repeat(auto-fill, minmax(320px, 1fr))`. The browser computes
+column count from viewport width with no JS resize handlers. 320px minimum keeps
+xterm.js output readable. `ceil(sqrt(n))` column math was rejected — it requires JS
+recalculation on resize and pin changes.
+
+**Read-only tiles, fullscreen for input (DL-004)**: Grid tiles are xterm.js instances
+with `disableStdin: true`. Multiple tiles are visible simultaneously; enabling input
+on all would create keystroke ambiguity. Clicking the fullscreen button opens a
+`position:fixed` overlay (DL-013) with input re-enabled. ESC or the close button exits
+fullscreen and restores the read-only tile EventSource.
+
+**Server-side fan-out broadcaster (DL-003)**: `os.read()` on a PTY master fd is
+consuming — bytes read by one thread are lost to others. When a dashboard tile and
+the detail panel Terminal tab both have SSE streams open for the same container,
+they would race on the fd and produce interleaved incomplete output.
+
+`_start_broadcaster()` in `api.py` spawns one reader thread per PTY session. That
+thread reads from master_fd and puts each chunk into every queue in
+`session["subscribers"]`. Each SSE handler calls `subscribe_terminal()` to register
+its queue and `unsubscribe_terminal()` on disconnect — no thread racing, identical
+output to all readers. All reads go through the broadcaster via `subscribe_terminal()`/`unsubscribe_terminal()`; direct `os.read()` on the PTY fd is reserved to the single broadcaster thread.
+
+**Activity detection (DL-002)**: Claude activity status is detected client-side.
+`_startDashboardStatusInterval()` runs every 2 seconds and classifies each tile by
+elapsed time since the last SSE `onmessage` event:
+
+| Elapsed       | Status class     | Indicator            |
+| ------------- | ---------------- | -------------------- |
+| < 3 s         | `status-active`  | green pulse          |
+| 3 s – 30 s    | `status-waiting` | yellow               |
+| ≥ 30 s / none | `status-idle`    | grey                 |
+
+The 30-second idle threshold (R-002) accounts for browser background-tab
+throttling, which may buffer SSE delivery and delay `onmessage` timestamps, producing
+false idle readings. A 5-second threshold triggers false-idle on every tab switch. A server-side status endpoint was rejected (RA-004) — it adds API surface
+for a UI-only concern.
+
+**Shared PTY sessions and cleanup (DL-006)**: Dashboard tiles share one PTY session
+per container with the detail panel Terminal tab. Unpinning a tile or navigating away
+from the dashboard closes the EventSource (unsubscribing from the broadcaster) but
+does NOT call `DELETE /api/containers/<name>/terminal`. Calling DELETE would kill a
+PTY session that the detail panel may still be using.
+
+The idle reaper (`_idle_reaper()` in `api.py`) runs every 30 seconds and calls
+`_cleanup_session()` on sessions whose subscriber list is empty and whose
+`last_activity` timestamp is older than 60 seconds. The 60-second grace period
+prevents premature cleanup when the last subscriber just disconnected but a reconnect
+is imminent (e.g. page reload). The reaper thread starts on the first
+`create_terminal_session()` call and exits when no sessions remain.
+
+## Terminal Session Lifecycle
+
+1. `create_terminal_session()` reuses an existing PTY session if one is alive for the
+   container, or spawns a new `docker exec -it zsh` process (DL-007). One session per container.
+2. `_start_broadcaster()` launches one reader thread for the session.
+3. Each SSE handler (detail panel tab, dashboard tile) calls `subscribe_terminal()` and
+   receives a dedicated `queue.Queue(maxsize=1024)`.
+4. Broadcaster reads PTY master fd → puts chunks into all subscriber queues.
+5. Each SSE handler dequeues chunks and streams base64-encoded `data:` events.
+6. Input: `onData` → `POST .../terminal/input` → write to PTY master fd.
+7. SSE disconnect: handler calls `unsubscribe_terminal()` in `finally`.
+8. When subscriber count reaches zero and `last_activity` > 60 s ago, idle reaper calls
+   `_cleanup_session()`, which sends None sentinel to any remaining queues and closes
+   the PTY fd and process group.
+9. On server shutdown, `signal.SIGTERM` and `atexit` handlers close all sessions.

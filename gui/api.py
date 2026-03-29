@@ -10,6 +10,7 @@ RISK-004). Atomic JSON writes use tempfile+os.replace to avoid partial writes.
 """
 import json
 import os
+import queue
 import re
 import shlex
 import subprocess
@@ -191,6 +192,7 @@ def list_containers():
             "language": meta.get("language", ""),
             "created_at": meta.get("created_at", ""),
             "stale": stale,
+            "pinned": bool(meta.get("pinned", False)),
         })
 
     for name, status_raw in docker_state.items():
@@ -207,6 +209,7 @@ def list_containers():
                 "language": "",
                 "created_at": "",
                 "stale": False,
+                "pinned": False,
             })
 
     if registry_updated:
@@ -217,6 +220,27 @@ def list_containers():
             pass  # non-fatal: path will be re-detected on next load
 
     return results
+
+
+def patch_container_pin(container_name, pinned):
+    """Set the pinned field for a registry entry to pinned (bool).
+
+    Reads the registry, updates only the pinned field for the named container,
+    and writes back atomically using _write_json_atomic. Returns {"ok": True,
+    "pinned": pinned} on success or {"error": ...} if the entry is not found.
+    (refs: DL-005)
+    """
+    registry = _read_json_file(_REGISTRY_PATH)
+    entries = registry.get("containers", {})
+    if container_name not in entries:
+        return {"error": "not found"}
+    entries[container_name] = dict(entries[container_name], pinned=bool(pinned))
+    registry["containers"] = entries
+    try:
+        _write_json_atomic(_REGISTRY_PATH, registry)
+    except OSError as exc:
+        return {"error": str(exc)}
+    return {"ok": True, "pinned": bool(pinned)}
 
 
 def get_merged_config(project_dir):
@@ -1114,10 +1138,16 @@ def destroy_container(name):
     return {"ok": True}
 
 
-# Terminal session management (M-005)
-# Keyed by container_name; each entry: {proc, master_fd (or None), lock}
+# Terminal session management
+# Keyed by container_name. Each session dict:
+#   proc          - subprocess.Popen for the docker exec process
+#   master_fd     - PTY master file descriptor, or None when using pipe fallback
+#   lock          - threading.Lock for fd write access
+#   subscribers   - list of queue.Queue instances registered by active SSE handlers (DL-003)
+#   last_activity - float timestamp (time.time()) of last PTY byte read; 0 if none (DL-006)
 _terminal_sessions = {}
 _terminal_sessions_lock = threading.Lock()
+_reaper_started = False  # True while _idle_reaper daemon thread is running (DL-006)
 
 
 def create_terminal_session(container_name):
@@ -1127,6 +1157,8 @@ def create_terminal_session(container_name):
     subprocess.Popen with pipes when pty module is absent (Windows).
     Returns {ok: True} or {error: ...}.
     """
+    import time as _time
+    global _reaper_started
     with _terminal_sessions_lock:
         existing = _terminal_sessions.get(container_name)
         if existing:
@@ -1154,6 +1186,8 @@ def create_terminal_session(container_name):
                     "proc": proc,
                     "master_fd": master_fd,
                     "lock": threading.Lock(),
+                    "subscribers": [],
+                    "last_activity": 0,
                 }
             else:
                 # Pipe fallback for Windows where pty is unavailable.
@@ -1170,39 +1204,173 @@ def create_terminal_session(container_name):
                     "proc": proc,
                     "master_fd": None,
                     "lock": threading.Lock(),
+                    "subscribers": [],
+                    "last_activity": 0,
                 }
         except Exception as e:
             return {"error": str(e)}
+        _start_broadcaster(container_name, _terminal_sessions[container_name])
+        if not _reaper_started:
+            _reaper_started = True
+            t = threading.Thread(target=_idle_reaper, daemon=True)
+            t.start()
         return {"ok": True}
 
 
-def read_terminal(container_name, timeout=0.05):
-    """Read available bytes from the terminal session.
+def _start_broadcaster(container_name, session):
+    """Start the single reader thread that fans out PTY output to subscriber queues.
 
-    Returns bytes or b'' when nothing available. Returns None if session absent.
+    One broadcaster thread per PTY session reads from master_fd (or stdout pipe on
+    Windows) and puts each chunk into every queue in session["subscribers"].
+    Multiple concurrent SSE handlers (e.g. dashboard tile + detail panel) each register
+    a queue via subscribe_terminal() and receive identical output without racing on the
+    fd (DL-003).
+
+    Sends None sentinel to all subscribers when the PTY EOF or process exit is detected,
+    signalling SSE handlers to close their streams.
+    Updates session["last_activity"] on each non-empty read for the idle reaper (DL-006).
     """
-    session = _terminal_sessions.get(container_name)
-    if not session:
-        return None
-    if session["master_fd"] is not None:
-        import select
-        try:
-            r, _, _ = select.select([session["master_fd"]], [], [], timeout)
-            if r:
-                return os.read(session["master_fd"], 4096)
-            return b""
-        except OSError:
-            return None
-    else:
-        # pipe-based fallback: non-blocking read
-        try:
-            import fcntl
-            fd = session["proc"].stdout.fileno()
-            fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-            fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-            return session["proc"].stdout.read(4096) or b""
-        except (OSError, AttributeError):
-            return b""
+    import time as _time
+
+    def _broadcaster():
+        import select as _select
+        master_fd = session.get("master_fd")
+        if master_fd is None:
+            pipe_q = queue.Queue()
+
+            def _pipe_reader():
+                try:
+                    while True:
+                        chunk = session["proc"].stdout.read(4096)
+                        if chunk:
+                            pipe_q.put(chunk)
+                        else:
+                            pipe_q.put(None)
+                            return
+                except (OSError, AttributeError):
+                    pipe_q.put(None)
+
+            _pt = threading.Thread(target=_pipe_reader, daemon=True)
+            _pt.start()
+
+        while True:
+            master_fd = session.get("master_fd")
+            if master_fd is not None:
+                try:
+                    r, _, _ = _select.select([master_fd], [], [], 0.05)
+                    if r:
+                        chunk = os.read(master_fd, 4096)
+                    else:
+                        chunk = b""
+                except OSError:
+                    chunk = None
+            else:
+                try:
+                    chunk = pipe_q.get(timeout=0.05)
+                except queue.Empty:
+                    chunk = b""
+
+            if chunk is None:
+                with _terminal_sessions_lock:
+                    subs = list(session.get("subscribers", []))
+                for q in subs:
+                    try:
+                        q.put_nowait(None)
+                    except Exception:
+                        pass
+                return
+
+            if chunk:
+                session["last_activity"] = _time.time()
+                with _terminal_sessions_lock:
+                    subs = list(session.get("subscribers", []))
+                for q in subs:
+                    try:
+                        q.put_nowait(chunk)
+                    except queue.Full:
+                        pass
+
+            if not chunk:
+                if session["proc"].poll() is not None:
+                    with _terminal_sessions_lock:
+                        subs = list(session.get("subscribers", []))
+                    for q in subs:
+                        try:
+                            q.put_nowait(None)
+                        except Exception:
+                            pass
+                    return
+
+    t = threading.Thread(target=_broadcaster, daemon=True)
+    t.start()
+
+
+def subscribe_terminal(container_name):
+    """Register a new subscriber queue for the named container's PTY broadcaster.
+
+    Returns a queue.Queue(maxsize=1024). The caller (SSE handler) dequeues chunks
+    and writes them to the HTTP response. Call unsubscribe_terminal() in a finally
+    block to avoid stale queue references in session["subscribers"] (DL-006).
+    Returns an empty queue if no session exists for container_name.
+    """
+    q = queue.Queue(maxsize=1024)
+    with _terminal_sessions_lock:
+        session = _terminal_sessions.get(container_name)
+        if session is not None:
+            session["subscribers"].append(q)
+    return q
+
+
+def unsubscribe_terminal(container_name, q):
+    """Remove subscriber queue q from the named container's PTY session.
+
+    Safe to call if the session has already been cleaned up (no-op in that case).
+    Does NOT delete the PTY session; the idle reaper (DL-006) handles cleanup
+    when zero subscribers remain and last_activity is stale.
+    """
+    with _terminal_sessions_lock:
+        session = _terminal_sessions.get(container_name)
+        if session is not None:
+            try:
+                session["subscribers"].remove(q)
+            except ValueError:
+                pass
+
+
+def _idle_reaper():
+    """Background daemon: close PTY sessions orphaned by all consumers disconnecting.
+
+    Wakes every 30 seconds and scans _terminal_sessions. Calls _cleanup_session() on
+    any session that has zero subscribers AND whose last_activity timestamp is either
+    zero or older than 60 seconds (DL-006).
+
+    The 60-second grace period prevents premature cleanup of sessions whose last
+    subscriber just disconnected but a new one is about to connect (e.g. page reload).
+    Exits and resets _reaper_started when no sessions remain, so a new reaper thread
+    is started on the next create_terminal_session() call.
+    """
+    import time as _time
+    while True:
+        _time.sleep(30)
+        with _terminal_sessions_lock:
+            names = list(_terminal_sessions.keys())
+        for name in names:
+            with _terminal_sessions_lock:
+                session = _terminal_sessions.get(name)
+                if session is None:
+                    continue
+                subs = session.get("subscribers", [])
+                last = session.get("last_activity", 0)
+                if len(subs) == 0 and (last == 0 or (_time.time() - last) > 60):
+                    _cleanup_session(name)
+        with _terminal_sessions_lock:
+            if not _terminal_sessions:
+                global _reaper_started
+                _reaper_started = False
+                return
+
+
+# read_terminal() removed — broadcaster fan-out replaced per-connection reads
 
 
 def write_terminal(container_name, data):
@@ -1226,6 +1394,13 @@ def _cleanup_session(container_name):
     session = _terminal_sessions.pop(container_name, None)
     if not session:
         return
+    # Signal all subscriber queues with None sentinel so SSE handlers exit their
+    # dequeue loops instead of blocking indefinitely after the session is removed (DL-006).
+    for q in session.get("subscribers", []):
+        try:
+            q.put_nowait(None)
+        except Exception:
+            pass
     proc = session["proc"]
     master_fd = session["master_fd"]
     try:

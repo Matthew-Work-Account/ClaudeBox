@@ -58,6 +58,7 @@ const refAddOutput = document.getElementById("ref-add-output");
 
 const modulesPanel           = document.getElementById("modules-panel");
 const settingsPanel          = document.getElementById("settings-panel");
+const dashboardPanel         = document.getElementById("dashboard-panel");
 const globalModuleList       = document.getElementById("global-module-list");
 const globalModuleEditorPanel= document.getElementById("global-module-editor-panel");
 const globalModuleEditorTitle= document.getElementById("global-module-editor-title");
@@ -126,13 +127,22 @@ function showPanel(name) {
   welcomePanel.classList.add("hidden");
   modulesPanel.classList.add("hidden");
   settingsPanel.classList.add("hidden");
+  dashboardPanel.classList.add("hidden");
+  // Tear down dashboard tiles when leaving the dashboard view so SSE connections
+  // are closed and xterm.js instances are disposed (DL-006).
+  if (name !== "dashboard") {
+    _teardownDashboardTiles(Object.keys(_dashboardTiles));
+    _stopDashboardStatusInterval();
+  }
   if (name === "detail")        detailPanel.classList.remove("hidden");
   else if (name === "new")      newPanel.classList.remove("hidden");
   else if (name === "modules")  modulesPanel.classList.remove("hidden");
   else if (name === "settings") settingsPanel.classList.remove("hidden");
+  else if (name === "dashboard") dashboardPanel.classList.remove("hidden");
   else                          welcomePanel.classList.remove("hidden");
   document.getElementById("modules-nav-btn").classList.toggle("active", name === "modules");
   document.getElementById("settings-nav-btn").classList.toggle("active", name === "settings");
+  document.getElementById("dashboard-nav-btn").classList.toggle("active", name === "dashboard");
 }
 
 /** Set text and error/success class on a status message element. */
@@ -271,6 +281,12 @@ function selectContainer(c) {
   detailName.textContent = c.nickname || c.name;
   document.getElementById("nickname-edit-btn").classList.remove("hidden");
   document.getElementById("nickname-edit-group").classList.add("hidden");
+  const pinBtn = document.getElementById("detail-pin-btn");
+  if (pinBtn) {
+    pinBtn.classList.remove("hidden");
+    _updatePinBtnLabel(c.name);
+    pinBtn.onclick = function () { togglePinContainer(c.name); };
+  }
   const cls = statusClass(c.status);
 
   // Toggle Stop ↔ Start based on container status (both Overview and Terminal tab buttons)
@@ -361,6 +377,9 @@ function selectContainer(c) {
   activateTab("detail", (_savedState && _savedState.tab) || "overview");
 
   showPanel("detail");
+
+  // Sync pin button label when navigating to a container detail view (DL-005).
+  _updatePinBtnLabel(c.name);
 
   if (!c.project_path) {
     // Auto-detection already ran on the server; if project_path is still empty
@@ -3293,6 +3312,14 @@ document.getElementById("terminal-disconnect-btn").addEventListener("click", fun
   document.getElementById("terminal-disconnect-btn").classList.add("hidden");
 });
 
+// --- Pin button in terminal detail header ---
+// Clicking Pin/Unpin while a container detail panel is open toggles pin state in
+// the registry via PATCH /api/containers/<name>/pin (DL-005) and updates the button label.
+document.getElementById("detail-pin-btn").addEventListener("click", function () {
+  if (!selectedContainer) return;
+  togglePinContainer(selectedContainer.name);
+});
+
 // --- Popout button ---
 
 document.getElementById("terminal-popout-btn").addEventListener("click", function () {
@@ -3565,3 +3592,368 @@ document.getElementById("ref-add-btn").addEventListener("click", function () {
 // --- Init ---
 
 loadContainers();
+
+// Dashboard tiles use direct EventSource instances per tile; broadcaster fan-out
+// handles multiple concurrent readers server-side (DL-003, see api.py).
+
+// Activity status tracking: _startDashboardStatusInterval() in dashboard section (DL-002).
+
+// Fullscreen interaction: _openDashboardFullscreen() in dashboard section (DL-013).
+
+// Fullscreen overlay and activity status are implemented as part of
+// the dashboard functions: _openDashboardFullscreen(), _startDashboardStatusInterval(),
+// and _stopDashboardStatusInterval().
+// The fsBtn click handler in _createDashboardTile calls _openDashboardFullscreen(name).
+
+// --- Dashboard (pinned container terminals) ---
+//
+// Architecture:
+//   - Pin state: registry pinned field via PATCH /api/containers/<name>/pin (DL-005)
+//   - Grid layout: CSS auto-fill minmax(320px,1fr) — no JS column math (DL-008)
+//   - Tiles are read-only xterm.js previews; fullscreen enables input (DL-004)
+//   - Activity detection: client-side SSE timestamp diff, 30s idle threshold (DL-002)
+//   - PTY sessions shared with detail panel; unpin closes SSE but not PTY (DL-006)
+//   - Server fan-out broadcaster handles concurrent SSE readers (DL-003)
+
+const _dashboardTiles = {};
+// _dashboardTiles: keyed by container name; each entry:
+//   { xterm, fitAddon, eventSource, lastActivity }
+// eventSource is null while fullscreen overlay is open for that container.
+let _dashboardStatusInterval = null;
+
+// Returns xterm.js theme tokens for the current light/dark mode.
+function getDashboardTerminalTheme() {
+  // Reads data-theme attribute set by the theme toggle; defaults to dark.
+  const isDark = document.documentElement.getAttribute("data-theme") !== "light";
+  return isDark
+    ? { background: "#0d0d0d", foreground: "#c8e6c9", cursor: "#a0cfb0" }
+    : { background: "#f8f9fa", foreground: "#1e2433", cursor: "#1e2433" };
+}
+
+// Fetches pinned containers from the registry via GET /api/containers (DL-005).
+// Returns a Promise resolving to an array of container objects with pinned===true.
+function fetchPinnedContainers() {
+  return fetch("/api/containers")
+    .then(function (r) { return r.json(); })
+    .then(function (containers) { return containers.filter(function (c) { return c.pinned === true; }); });
+}
+
+// Sets the pinned state for a container via PATCH /api/containers/<name>/pin (DL-005).
+function setPinned(name, pinned) {
+  return fetch("/api/containers/" + encodeURIComponent(name) + "/pin", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pinned: pinned }),
+  });
+}
+
+// Toggles pin state for a container by reading current state from the registry,
+// sending a PATCH to flip it, then refreshing the dashboard grid if visible.
+function togglePinContainer(name) {
+  fetchPinnedContainers().then(function (pinned) {
+    const isPinned = pinned.some(function (c) { return c.name === name; });
+    setPinned(name, !isPinned).then(function () {
+      _updatePinBtnLabel(name);
+      if (!dashboardPanel.classList.contains("hidden")) renderDashboardGrid();
+    });
+  });
+}
+
+// Syncs the "Pin"/"Unpin" label on #detail-pin-btn to match current registry pin state.
+function _updatePinBtnLabel(name) {
+  const btn = document.getElementById("detail-pin-btn");
+  if (!btn) return;
+  fetchPinnedContainers().then(function (pinned) {
+    btn.textContent = pinned.some(function (c) { return c.name === name; }) ? "Unpin" : "Pin";
+  });
+}
+
+// Renders the dashboard grid from the current pinned container list in the registry.
+// Creates tiles for newly pinned containers; removes tiles for unpinned ones.
+// Shows the empty-state element when no containers are pinned (DL-008).
+function renderDashboardGrid() {
+  const grid = document.getElementById("dashboard-grid");
+  const emptyState = document.getElementById("dashboard-empty-state");
+  if (!grid) return;
+
+  fetchPinnedContainers().then(function (pinnedContainers) {
+    const pinned = pinnedContainers.map(function (c) { return c.name; });
+    const existing = Object.keys(_dashboardTiles);
+    const toAdd = pinned.filter(function (n) { return !existing.includes(n); });
+    const toRemove = existing.filter(function (n) { return !pinned.includes(n); });
+
+    _teardownDashboardTiles(toRemove);
+    toRemove.forEach(function (n) {
+      const el = grid.querySelector(".dashboard-tile[data-container='" + n + "']");
+      if (el) el.remove();
+    });
+
+    toAdd.forEach(function (n) { _createDashboardTile(n, grid); });
+
+    if (emptyState) emptyState.style.display = pinned.length === 0 ? "" : "none";
+  }).catch(function () {});
+}
+
+// Creates one dashboard tile DOM element for container name and appends it to grid.
+//
+// Tile layout: header (status dot + name + Unpin + Fullscreen) + tile-body (xterm).
+// The xterm.js instance is configured read-only (disableStdin: true) (DL-004).
+//
+// FitAddon.fit() must be called only after the tile element is visible and has
+// non-zero dimensions. Calling fit() on a hidden or zero-sized element fails
+// silently: the terminal canvas is sized to 0x0 and subsequent output renders
+// incorrectly. A ResizeObserver on the tile-body element triggers fit() once the
+// element is laid out, ensuring correct sizing even when the dashboard panel
+// renders tiles before they become visible.
+//
+// An EventSource subscribes to /api/containers/<name>/terminal/stream (DL-007);
+// each SSE message updates lastActivity for client-side status detection (DL-002).
+// The tile state is stored in _dashboardTiles[name].
+function _createDashboardTile(name, grid) {
+  const tile = document.createElement("div");
+  tile.className = "dashboard-tile";
+  tile.dataset.container = name;
+
+  const header = document.createElement("div");
+  header.className = "dashboard-tile-header";
+
+  const statusDot = document.createElement("span");
+  statusDot.className = "dashboard-status-dot status-idle";
+
+  const nameSpan = document.createElement("span");
+  nameSpan.className = "dashboard-tile-name";
+  nameSpan.textContent = name;
+
+  const unpinBtn = document.createElement("button");
+  unpinBtn.className = "dashboard-tile-unpin cmd-btn";
+  unpinBtn.textContent = "Unpin";
+  unpinBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    setPinned(name, false).then(function () {
+      _teardownDashboardTiles([name]);
+      tile.remove();
+      _updatePinBtnLabel(name);
+      fetchPinnedContainers().then(function (pinned) {
+        const emptyState = document.getElementById("dashboard-empty-state");
+        if (emptyState) emptyState.style.display = pinned.length === 0 ? "" : "none";
+      });
+    });
+  });
+
+  const fsBtn = document.createElement("button");
+  fsBtn.className = "dashboard-tile-fullscreen cmd-btn";
+  fsBtn.title = "Fullscreen";
+  fsBtn.textContent = "\u26F6";
+  fsBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    _openDashboardFullscreen(name);
+  });
+
+  header.appendChild(statusDot);
+  header.appendChild(nameSpan);
+  header.appendChild(unpinBtn);
+  header.appendChild(fsBtn);
+
+  const xtermContainer = document.createElement("div");
+  xtermContainer.className = "dashboard-tile-body";
+
+  tile.appendChild(header);
+  tile.appendChild(xtermContainer);
+  grid.appendChild(tile);
+
+  if (!window.Terminal) {
+    xtermContainer.textContent = "xterm.js not available";
+    return;
+  }
+
+  const xterm = new window.Terminal({
+    theme: getDashboardTerminalTheme(),
+    fontSize: 11,
+    scrollback: 500,
+    disableStdin: true,
+  });
+  let fitAddon = null;
+  if (window.FitAddon) {
+    fitAddon = new window.FitAddon.FitAddon();
+    xterm.loadAddon(fitAddon);
+  }
+  xterm.open(xtermContainer);
+
+  if (fitAddon && typeof ResizeObserver !== "undefined") {
+    const ro = new ResizeObserver(function () {
+      if (fitAddon && xtermContainer.offsetWidth > 0) fitAddon.fit();
+    });
+    ro.observe(xtermContainer);
+    xterm._dashRo = ro;
+  }
+
+  const es = new EventSource("/api/containers/" + encodeURIComponent(name) + "/terminal/stream");
+  es.onmessage = function (evt) {
+    try {
+      const msg = JSON.parse(evt.data);
+      if (msg.data) {
+        xterm.write(atob(msg.data));
+      }
+    } catch (e) {}
+    if (_dashboardTiles[name]) _dashboardTiles[name].lastActivity = Date.now();
+  };
+
+  _dashboardTiles[name] = { xterm: xterm, fitAddon: fitAddon, eventSource: es, lastActivity: 0 };
+  requestAnimationFrame(function () {
+    if (fitAddon && xtermContainer.offsetWidth > 0) fitAddon.fit();
+  });
+}
+
+// Closes EventSources and disposes xterm.js instances for the given container names.
+// Removes entries from _dashboardTiles.
+// Closing the EventSource unsubscribes from the server broadcaster (DL-006):
+// the PTY session itself is NOT deleted here, preserving any detail panel session.
+function _teardownDashboardTiles(names) {
+  names.forEach(function (name) {
+    const tile = _dashboardTiles[name];
+    if (!tile) return;
+    if (tile.eventSource) tile.eventSource.close();
+    if (tile.xterm) {
+      if (tile.xterm._dashRo) tile.xterm._dashRo.disconnect();
+      tile.xterm.dispose();
+    }
+    delete _dashboardTiles[name];
+  });
+}
+
+// Starts a 2-second interval that updates activity status dots on all visible tiles.
+// Status classification by elapsed time since last SSE message (DL-002):
+//   < 3s  -> status-active  (green pulse)
+//   < 30s -> status-waiting (yellow)
+//   >= 30s or never -> status-idle (grey)
+// 30s idle threshold prevents false-idle from browser background-tab SSE throttling (R-002).
+function _startDashboardStatusInterval() {
+  if (_dashboardStatusInterval) return;
+  _dashboardStatusInterval = setInterval(function () {
+    const now = Date.now();
+    Object.keys(_dashboardTiles).forEach(function (name) {
+      const tile = _dashboardTiles[name];
+      const tileEl = document.querySelector(".dashboard-tile[data-container='" + name + "']");
+      if (!tileEl) return;
+      const dot = tileEl.querySelector(".dashboard-status-dot");
+      if (!dot) return;
+      const elapsed = tile.lastActivity ? (now - tile.lastActivity) : Infinity;
+      dot.className = "dashboard-status-dot " + (
+        elapsed < 3000 ? "status-active" :
+        elapsed < 30000 ? "status-waiting" :
+        "status-idle"
+      );
+    });
+  }, 2000);
+}
+
+// Clears the status dot update interval started by _startDashboardStatusInterval().
+function _stopDashboardStatusInterval() {
+  if (_dashboardStatusInterval) {
+    clearInterval(_dashboardStatusInterval);
+    _dashboardStatusInterval = null;
+  }
+}
+
+// Opens the fullscreen overlay for container name, enabling interactive input (DL-013).
+//
+// Closes the tile's read-only EventSource before opening the overlay to avoid two
+// concurrent SSE readers on the same container from the same browser tab (DL-003).
+// A new xterm.js instance (input enabled) and EventSource are created for the overlay.
+// Keyboard input is forwarded via POST /api/containers/<name>/terminal/input.
+// On close (ESC or close button), the overlay EventSource and xterm are disposed, and
+// the tile's EventSource is re-opened to resume read-only preview (DL-004).
+function _openDashboardFullscreen(name) {
+  const overlay = document.getElementById("dashboard-fullscreen-overlay");
+  const xtermContainer = document.getElementById("fullscreen-xterm-container");
+  const nameLabel = document.getElementById("fullscreen-container-name");
+  const statusLabel = document.getElementById("fullscreen-status-label");
+  if (!overlay || !xtermContainer) return;
+
+  const tileState = _dashboardTiles[name];
+  if (tileState && tileState.eventSource) {
+    tileState.eventSource.close();
+    tileState.eventSource = null;
+  }
+
+  xtermContainer.innerHTML = "";
+  nameLabel.textContent = name;
+  statusLabel.textContent = "Connected";
+  overlay.classList.remove("hidden");
+
+  const fsXterm = new window.Terminal({
+    theme: getDashboardTerminalTheme(),
+    fontSize: 13,
+    scrollback: 1000,
+  });
+  let fsFitAddon = null;
+  if (window.FitAddon) {
+    fsFitAddon = new window.FitAddon.FitAddon();
+    fsXterm.loadAddon(fsFitAddon);
+  }
+  fsXterm.open(xtermContainer);
+
+  if (fsFitAddon && typeof ResizeObserver !== "undefined") {
+    const fsRo = new ResizeObserver(function () {
+      if (fsFitAddon && xtermContainer.offsetWidth > 0) fsFitAddon.fit();
+    });
+    fsRo.observe(xtermContainer);
+    fsXterm._fsRo = fsRo;
+  } else if (fsFitAddon) {
+    requestAnimationFrame(function () { fsFitAddon.fit(); });
+  }
+
+  const fsEs = new EventSource("/api/containers/" + encodeURIComponent(name) + "/terminal/stream");
+  fsEs.onmessage = function (evt) {
+    try {
+      const msg = JSON.parse(evt.data);
+      if (msg.data) fsXterm.write(atob(msg.data));
+    } catch (e) {}
+  };
+
+  const inputDisposable = fsXterm.onData(function (data) {
+    fetch("/api/containers/" + encodeURIComponent(name) + "/terminal/input", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ data: data }),
+    }).catch(function () {});
+  });
+
+  function closeFullscreen() {
+    fsEs.close();
+    inputDisposable.dispose();
+    if (fsXterm._fsRo) fsXterm._fsRo.disconnect();
+    fsXterm.dispose();
+    overlay.classList.add("hidden");
+    document.removeEventListener("keydown", escHandler);
+    const tileStateAfter = _dashboardTiles[name];
+    if (tileStateAfter && !tileStateAfter.eventSource) {
+      const newEs = new EventSource("/api/containers/" + encodeURIComponent(name) + "/terminal/stream");
+      newEs.onmessage = function (evt) {
+        try {
+          const msg2 = JSON.parse(evt.data);
+          if (msg2.data && tileStateAfter.xterm) tileStateAfter.xterm.write(atob(msg2.data));
+        } catch (e) {}
+        if (_dashboardTiles[name]) _dashboardTiles[name].lastActivity = Date.now();
+      };
+      tileStateAfter.eventSource = newEs;
+    }
+  }
+
+  function escHandler(e) {
+    if (e.key === "Escape") {
+      if (document.querySelector('.file-viewer-modal:not(.hidden)')) return;
+      closeFullscreen();
+    }
+  }
+  document.addEventListener("keydown", escHandler);
+  document.getElementById("fullscreen-close-btn").onclick = closeFullscreen;
+}
+
+document.getElementById("dashboard-nav-btn").addEventListener("click", function () {
+  // Deselect container list items; show dashboard panel; render grid; start status ticker.
+  document.querySelectorAll(".container-item").forEach(function (el) { el.classList.remove("active"); });
+  showPanel("dashboard");
+  renderDashboardGrid();
+  _startDashboardStatusInterval();
+});

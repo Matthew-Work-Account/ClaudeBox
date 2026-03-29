@@ -2892,3 +2892,176 @@ details.new-form-accordion[open] > summary.new-form-accordion-toggle::before {
 .refs-refresh-row { margin-top: 4px; }
 .checkbox-label { display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 .checkbox-label input[type="checkbox"] { margin: 0; }
+
+/* .dashboard-fullscreen-overlay, .dashboard-fullscreen-header, .dashboard-fullscreen-body,
+   .status-active, .status-waiting, .status-idle, and @keyframes dash-pulse
+   are defined at the end of this file. */
+
+/* --- Dashboard panel ---
+   Grid: CSS auto-fill minmax(320px,1fr) — browser handles column count based on
+   viewport width; no JS column math required (DL-008). 320px minimum keeps
+   terminals readable at all viewport sizes.
+   Status dots: .status-active (green pulse), .status-waiting (yellow),
+   .status-idle (grey) — classified by client-side SSE timestamp diff (DL-002).
+   Fullscreen overlay: position:fixed over entire viewport; z-index 1001 — stacks above file-viewer modal (z-index 1000) (DL-013). */
+
+#dashboard-panel {
+  padding: var(--space-md);
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  margin-bottom: var(--space-md);
+}
+
+.dashboard-header h2 {
+  margin: 0;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-md);
+}
+
+.dashboard-empty-state {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: var(--space-xl);
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+
+.dashboard-tile {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-card);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 280px;
+}
+
+.dashboard-tile-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 6px var(--space-sm);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dashboard-tile-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-tile-unpin,
+.dashboard-tile-fullscreen {
+  padding: 2px 6px;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.dashboard-tile-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-terminal);
+}
+
+.dashboard-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.status-active {
+  background: var(--success);
+  animation: dash-pulse 1s infinite;
+}
+
+.status-waiting {
+  background: var(--warning);
+}
+
+.status-idle {
+  background: var(--text-muted);
+}
+
+@keyframes dash-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.dashboard-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1001;
+  background: var(--bg-main);
+  display: flex;
+  flex-direction: column;
+}
+
+.dashboard-fullscreen-overlay.hidden {
+  display: none;
+}
+
+.dashboard-fullscreen-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dashboard-fullscreen-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.dashboard-fullscreen-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-terminal);
+  padding: 4px;
+}
+
+.dashboard-fullscreen-body .xterm {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+/* xterm.js renders a flex container; these overrides ensure the terminal canvas
+   fills the tile-body height rather than collapsing to zero inside the flex column. */
+.dashboard-tile-body .xterm {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+  overflow: hidden;
+}
+
+.dashboard-pin-btn {
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+@media (max-width: 700px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
