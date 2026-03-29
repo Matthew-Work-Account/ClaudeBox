@@ -383,13 +383,24 @@ def register_container(name, project_dir, language=""):
 
     UTC is used (not local time) so the timestamp survives timezone changes
     and displays consistently across host locales in the GUI.
+
+    When a new container replaces an old one for the same project_dir, the
+    pinned state is transferred from the old entry and the old entry is
+    unpinned to prevent duplicate pins on the dashboard.
     """
     registry = _read_json_file(_REGISTRY_PATH)
     containers = registry.get("containers", {})
+    # Transfer pinned state from any other container with the same project_dir.
+    inherited_pin = False
+    for other_name, other_meta in containers.items():
+        if other_name != name and other_meta.get("project_dir") == project_dir and other_meta.get("pinned"):
+            inherited_pin = True
+            containers[other_name] = dict(other_meta, pinned=False)
     containers[name] = {
         "project_dir": project_dir,
         "language": language,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "pinned": inherited_pin,
     }
     registry["containers"] = containers
     _write_json_atomic(_REGISTRY_PATH, registry)
@@ -956,7 +967,15 @@ def open_terminal(name, terminal_type="auto"):
     import platform
     import shutil as _shutil
 
-    docker_cmd = "docker exec -it -u node -e TERM=xterm-256color " + shlex.quote(name) + " tmux new-session -A -s claudebox"
+    # Use tmux if available in the container, otherwise fall back to zsh.
+    _has_tmux = subprocess.run(
+        ["docker", "exec", name, "which", "tmux"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    ).returncode == 0
+    if _has_tmux:
+        docker_cmd = "docker exec -it -u node -e TERM=xterm-256color " + shlex.quote(name) + " tmux new-session -A -s claudebox"
+    else:
+        docker_cmd = "docker exec -it -u node -w /workspace -e TERM=xterm-256color " + shlex.quote(name) + " zsh"
     system = platform.system().lower()
     release = platform.uname().release.lower()
     is_wsl = system == "linux" and "microsoft" in release
@@ -1173,8 +1192,17 @@ def create_terminal_session(container_name):
 
         _reg = _read_json_file(_REGISTRY_PATH).get("containers", {})
         _proj = _reg.get(container_name, {}).get("project_dir", "/workspace")
-        cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color", container_name,
-               "tmux", "new-session", "-A", "-s", "claudebox", "-c", _proj]
+        # Use tmux if available in the container, otherwise fall back to zsh.
+        _has_tmux = subprocess.run(
+            ["docker", "exec", container_name, "which", "tmux"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        ).returncode == 0
+        if _has_tmux:
+            cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color", container_name,
+                   "tmux", "new-session", "-A", "-s", "claudebox", "-c", _proj]
+        else:
+            cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color",
+                   "-w", _proj, container_name, "zsh"]
         try:
             if HAS_PTY:
                 master_fd, slave_fd = _pty_mod.openpty()
