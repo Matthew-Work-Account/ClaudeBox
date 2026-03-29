@@ -954,7 +954,7 @@ def open_terminal(name, terminal_type="auto"):
     import platform
     import shutil as _shutil
 
-    docker_cmd = "docker exec -it " + shlex.quote(name) + " zsh"
+    docker_cmd = "docker exec -it -u node " + shlex.quote(name) + " zsh"
     system = platform.system().lower()
     release = platform.uname().release.lower()
     is_wsl = system == "linux" and "microsoft" in release
@@ -1169,7 +1169,7 @@ def create_terminal_session(container_name):
             # Stale session — clean up
             _cleanup_session(container_name)
 
-        cmd = ["docker", "exec", "-it", container_name, "zsh"]
+        cmd = ["docker", "exec", "-it", "-u", "node", container_name, "zsh"]
         try:
             if HAS_PTY:
                 master_fd, slave_fd = _pty_mod.openpty()
@@ -1194,7 +1194,7 @@ def create_terminal_session(container_name):
                 # os.setsid is POSIX-only — use it only when available (not on Windows/nt).
                 _preexec = os.setsid if hasattr(os, "setsid") else None
                 proc = subprocess.Popen(
-                    ["docker", "exec", "-i", container_name, "zsh"],
+                    ["docker", "exec", "-i", "-u", "node", container_name, "zsh"],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
