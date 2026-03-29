@@ -36,3 +36,4 @@ Desktop.ini
 
 # Per-project ClaudeBox config (local only)
 .claudebox.json
+.claudebox/claude-data/
