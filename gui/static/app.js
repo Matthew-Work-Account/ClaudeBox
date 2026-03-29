@@ -8,6 +8,16 @@
  * operate independently via initTabGroup(). (ref: DL-001)
  */
 
+// --- Helpers ---
+
+/** Decode a base64 string to Uint8Array so xterm.js renders UTF-8 correctly. */
+function _b64ToU8(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
 // --- State ---
 
 let selectedContainer = null;
@@ -3267,8 +3277,7 @@ function onTerminalTabActivate() {
     try {
       const msg = JSON.parse(evt.data);
       if (msg.data) {
-        const bytes = atob(msg.data);
-        _termXterm.write(bytes);
+        _termXterm.write(_b64ToU8(msg.data));
         _termXterm.scrollToBottom();
       }
     } catch (e) {}
@@ -3504,8 +3513,7 @@ function _onLocalTermSubtabActivate() {
     try {
       const msg = JSON.parse(evt.data);
       if (msg.data) {
-        const bytes = atob(msg.data);
-        _localTermXterm.write(bytes);
+        _localTermXterm.write(_b64ToU8(msg.data));
         _localTermXterm.scrollToBottom();
       }
     } catch (e) {}
@@ -3792,7 +3800,7 @@ function _createDashboardTile(name, grid) {
     try {
       const msg = JSON.parse(evt.data);
       if (msg.data) {
-        xterm.write(atob(msg.data));
+        xterm.write(_b64ToU8(msg.data));
       }
     } catch (e) {}
     if (_dashboardTiles[name]) _dashboardTiles[name].lastActivity = Date.now();
@@ -3907,7 +3915,7 @@ function _openDashboardFullscreen(name) {
   fsEs.onmessage = function (evt) {
     try {
       const msg = JSON.parse(evt.data);
-      if (msg.data) fsXterm.write(atob(msg.data));
+      if (msg.data) fsXterm.write(_b64ToU8(msg.data));
     } catch (e) {}
   };
 
@@ -3932,7 +3940,7 @@ function _openDashboardFullscreen(name) {
       newEs.onmessage = function (evt) {
         try {
           const msg2 = JSON.parse(evt.data);
-          if (msg2.data && tileStateAfter.xterm) tileStateAfter.xterm.write(atob(msg2.data));
+          if (msg2.data && tileStateAfter.xterm) tileStateAfter.xterm.write(_b64ToU8(msg2.data));
         } catch (e) {}
         if (_dashboardTiles[name]) _dashboardTiles[name].lastActivity = Date.now();
       };
