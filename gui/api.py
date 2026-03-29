@@ -44,6 +44,7 @@ _KNOWN_CONFIG_KEYS = {
     "extra_hosts",
     "claude_config_path",
     "default_clone_dir",
+    "persist_claude_data",
 }
 _VALID_LANGUAGES = {"node", "python", "dotnet", "go", "rust", "java", "none", "auto"}
 _CONFIG_TYPES = {
@@ -61,6 +62,7 @@ _CONFIG_TYPES = {
     "extra_hosts": list,
     "claude_config_path": str,
     "default_clone_dir": str,
+    "persist_claude_data": bool,
 }
 
 
