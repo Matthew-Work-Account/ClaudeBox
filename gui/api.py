@@ -1190,19 +1190,18 @@ def create_terminal_session(container_name):
             # Stale session — clean up
             _cleanup_session(container_name)
 
-        _reg = _read_json_file(_REGISTRY_PATH).get("containers", {})
-        _proj = _reg.get(container_name, {}).get("project_dir", "/workspace")
         # Use tmux if available in the container, otherwise fall back to zsh.
+        # Working directory must be a container-side path (not the host project_dir).
         _has_tmux = subprocess.run(
             ["docker", "exec", container_name, "which", "tmux"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         ).returncode == 0
         if _has_tmux:
             cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color", container_name,
-                   "tmux", "new-session", "-A", "-s", "claudebox", "-c", _proj]
+                   "tmux", "new-session", "-A", "-s", "claudebox", "-c", "/workspace"]
         else:
             cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color",
-                   "-w", _proj, container_name, "zsh"]
+                   "-w", "/workspace", container_name, "zsh"]
         try:
             if HAS_PTY:
                 master_fd, slave_fd = _pty_mod.openpty()

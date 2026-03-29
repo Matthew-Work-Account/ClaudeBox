@@ -504,11 +504,14 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
 
     def _send_json(self, data, status=200):
         body = json.dumps(data).encode()
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except BrokenPipeError:
+            pass  # client disconnected before response finished — harmless
 
     def _handle_terminal_stream(self, container_name):
         """SSE stream for terminal output of a named container.
