@@ -2526,6 +2526,13 @@ function initConfigForm(containerEl, options) {
   ccpRow.appendChild(ccpInput);
   advBody.appendChild(ccpRow);
 
+  const pcdRow = makeRow("Persist Claude Data", "Bind-mount .claudebox/claude-data/ to /home/node/.claude — survives destroy/rebuild (auth + conversation history)");
+  const pcdCheck = document.createElement("input");
+  pcdCheck.type = "checkbox";
+  pcdCheck.className = "form-checkbox";
+  pcdRow.appendChild(pcdCheck);
+  advBody.appendChild(pcdRow);
+
   // Default Env Profile
   const defProfRow = makeRow("Default Env Profile", "Profile activated automatically on container start");
   const defProfInput = makeTextInput("dev");
@@ -2586,6 +2593,7 @@ function initConfigForm(containerEl, options) {
         : [];
       if (cmds.length) data.extra_commands = cmds;
       if (ccpInput.value.trim()) data.claude_config_path = ccpInput.value.trim();
+      if (pcdCheck.checked) data.persist_claude_data = true;
       if (defProfInput.value.trim()) data.default_env_profile = defProfInput.value.trim();
       if (cloneDirInput && cloneDirInput.value.trim()) data.default_clone_dir = cloneDirInput.value.trim();
       if (envProfInput && envProfInput.value.trim()) data.env_profile = envProfInput.value.trim();
@@ -2627,6 +2635,7 @@ function initConfigForm(containerEl, options) {
 
       cmdsTA.value = Array.isArray(obj.extra_commands) ? obj.extra_commands.join("\n") : "";
       ccpInput.value = obj.claude_config_path || "";
+      pcdCheck.checked = obj.persist_claude_data === true;
       defProfInput.value = obj.default_env_profile || "";
       if (envProfInput) envProfInput.value = obj.env_profile || "";
       if (cloneDirInput) cloneDirInput.value = obj.default_clone_dir || "";
