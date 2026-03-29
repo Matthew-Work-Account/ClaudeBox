@@ -277,6 +277,19 @@ cmd_init() {
     touch "$history_file"
     mount_args+=(-v "${history_file}:/home/node/.bash_history")
 
+    # Claude data persistence (auth + conversation history) — opt-in via persist_claude_data: true
+    if [[ "$(cb_config_get "persist_claude_data" 2>/dev/null)" == "true" ]]; then
+        local claude_data_dir="${cwd}/.claudebox/claude-data"
+        mkdir -p "$claude_data_dir"
+        mount_args+=(-v "${claude_data_dir}:/home/node/.claude")
+        # Auto-protect auth tokens from git
+        local gitignore="${cwd}/.gitignore"
+        if ! grep -qF ".claudebox/claude-data" "$gitignore" 2>/dev/null; then
+            echo ".claudebox/claude-data/" >> "$gitignore"
+            echo "Added .claudebox/claude-data/ to .gitignore (contains auth tokens)"
+        fi
+    fi
+
     # Language-specific named volumes (all languages)
     for lang in "${languages[@]}"; do
         local _lf="${LANGUAGES_DIR}/${lang}.json"
