@@ -3951,61 +3951,35 @@ function _stopDashboardStatusInterval() {
 
 // Opens the fullscreen overlay for container name, enabling interactive input (DL-013).
 //
-// Closes the tile's read-only EventSource before opening the overlay to avoid two
-// concurrent SSE readers on the same container from the same browser tab (DL-003).
-// A new xterm.js instance (input enabled) and EventSource are created for the overlay.
-// Keyboard input is forwarded via POST /api/containers/<name>/terminal/input.
-// On close (ESC or close button), the overlay EventSource and xterm are disposed, and
-// the tile's EventSource is re-opened to resume read-only preview (DL-004).
+// Reparents the tile's xterm body element into the overlay so the same xterm instance,
+// scrollback, and EventSource are preserved. Input is enabled via onData while fullscreen.
+// On close, the xterm body is moved back to the tile and input is detached.
 function _openDashboardFullscreen(name) {
-  const overlay = document.getElementById("dashboard-fullscreen-overlay");
-  const xtermContainer = document.getElementById("fullscreen-xterm-container");
-  const nameLabel = document.getElementById("fullscreen-container-name");
-  const statusLabel = document.getElementById("fullscreen-status-label");
-  if (!overlay || !xtermContainer) return;
+  var overlay = document.getElementById("dashboard-fullscreen-overlay");
+  var fsContainer = document.getElementById("fullscreen-xterm-container");
+  var nameLabel = document.getElementById("fullscreen-container-name");
+  var statusLabel = document.getElementById("fullscreen-status-label");
+  if (!overlay || !fsContainer) return;
 
-  const tileState = _dashboardTiles[name];
-  if (tileState && tileState.eventSource) {
-    tileState.eventSource.close();
-    tileState.eventSource = null;
-  }
+  var tileState = _dashboardTiles[name];
+  if (!tileState || !tileState.xterm) return;
 
-  xtermContainer.innerHTML = "";
+  // Find the tile's xterm body element and reparent it into the overlay.
+  var tileEl = document.querySelector(".dashboard-tile[data-container='" + name + "']");
+  var tileBody = tileEl ? tileEl.querySelector(".dashboard-tile-body") : null;
+  if (!tileBody) return;
+
+  fsContainer.innerHTML = "";
+  fsContainer.appendChild(tileBody);
   nameLabel.textContent = name;
   statusLabel.textContent = "Connected";
   overlay.classList.remove("hidden");
 
-  const fsXterm = new window.Terminal({
-    theme: getDashboardTerminalTheme(),
-    fontSize: 13,
-    scrollback: 1000,
-  });
-  let fsFitAddon = null;
-  if (window.FitAddon) {
-    fsFitAddon = new window.FitAddon.FitAddon();
-    fsXterm.loadAddon(fsFitAddon);
-  }
-  fsXterm.open(xtermContainer);
+  // Refit xterm to the larger fullscreen container.
+  if (tileState.fitAddon) requestAnimationFrame(function () { if (tileState.fitAddon) tileState.fitAddon.fit(); });
 
-  if (fsFitAddon && typeof ResizeObserver !== "undefined") {
-    const fsRo = new ResizeObserver(function () {
-      if (fsFitAddon && xtermContainer.offsetWidth > 0) fsFitAddon.fit();
-    });
-    fsRo.observe(xtermContainer);
-    fsXterm._fsRo = fsRo;
-  } else if (fsFitAddon) {
-    requestAnimationFrame(function () { fsFitAddon.fit(); });
-  }
-
-  const fsEs = new EventSource("/api/containers/" + encodeURIComponent(name) + "/terminal/stream");
-  fsEs.onmessage = function (evt) {
-    try {
-      const msg = JSON.parse(evt.data);
-      if (msg.data) fsXterm.write(_b64ToU8(msg.data));
-    } catch (e) {}
-  };
-
-  const inputDisposable = fsXterm.onData(function (data) {
+  // Enable keyboard input while fullscreen.
+  var inputDisposable = tileState.xterm.onData(function (data) {
     fetch("/api/containers/" + encodeURIComponent(name) + "/terminal/input", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -4013,25 +3987,24 @@ function _openDashboardFullscreen(name) {
     }).catch(function () {});
   });
 
+  // Wire resize propagation while fullscreen.
+  var resizeDisposable = tileState.xterm.onResize(function (evt) {
+    fetch("/api/containers/" + encodeURIComponent(name) + "/terminal/resize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cols: evt.cols, rows: evt.rows }),
+    }).catch(function () {});
+  });
+
   function closeFullscreen() {
-    fsEs.close();
     inputDisposable.dispose();
-    if (fsXterm._fsRo) fsXterm._fsRo.disconnect();
-    fsXterm.dispose();
+    resizeDisposable.dispose();
     overlay.classList.add("hidden");
     document.removeEventListener("keydown", escHandler);
-    const tileStateAfter = _dashboardTiles[name];
-    if (tileStateAfter && !tileStateAfter.eventSource) {
-      const newEs = new EventSource("/api/containers/" + encodeURIComponent(name) + "/terminal/stream");
-      newEs.onmessage = function (evt) {
-        try {
-          const msg2 = JSON.parse(evt.data);
-          if (msg2.data && tileStateAfter.xterm) tileStateAfter.xterm.write(_b64ToU8(msg2.data));
-        } catch (e) {}
-        if (_dashboardTiles[name]) _dashboardTiles[name].lastActivity = Date.now();
-      };
-      tileStateAfter.eventSource = newEs;
-    }
+    // Move xterm body back to the tile.
+    if (tileEl) tileEl.appendChild(tileBody);
+    // Refit xterm to the smaller tile container.
+    if (tileState.fitAddon) requestAnimationFrame(function () { if (tileState.fitAddon) tileState.fitAddon.fit(); });
   }
 
   function escHandler(e) {
