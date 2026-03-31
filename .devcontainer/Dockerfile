@@ -87,6 +87,13 @@ alias l='ls -CF --color=auto'
 [ -f ~/.zshrc.local ] && source ~/.zshrc.local
 ZSHRC
 
+RUN cat > /home/node/.tmux.conf << 'TMUXCONF'
+set -g mouse on
+set -g history-limit 10000
+set -g default-terminal "tmux-256color"
+set -ga terminal-overrides ",xterm-256color:Tc"
+TMUXCONF
+
 ENV PATH=/home/node/.local/bin:${PATH} \
     HOME=/home/node
 
