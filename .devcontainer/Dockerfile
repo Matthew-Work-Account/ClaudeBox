@@ -28,9 +28,14 @@ RUN echo "==> Installing system packages..." && \
     python3 \
     python3-pip \
     ca-certificates \
+    locales \
+    && sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen \
+    && locale-gen \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
     && echo "==> System packages installed."
+
+ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
 RUN useradd -m -s /bin/zsh ${USERNAME}
 
