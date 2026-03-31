@@ -99,6 +99,8 @@ containers[name] = {
     "project_dir": project_dir,
     "language": language,
     "created_at": existing.get("created_at") or datetime.now(timezone.utc).isoformat(),
+    "refs": existing.get("refs", {}),
+    "pinned": existing.get("pinned", False),
 }
 data["containers"] = containers
 tmp = registry + ".tmp"
@@ -128,6 +130,73 @@ tmp = registry + ".tmp"
 with open(tmp, "w") as f:
     json.dump(data, f, indent=2)
 os.replace(tmp, registry)
+PYEOF
+}
+
+registry_save_ref() {
+    local name="$1" ref_name="$2" host_path="$3"
+    local registry="${HOME}/.claudebox/registry.json"
+    python3 - "$name" "$ref_name" "$host_path" "$registry" <<'PYEOF'
+import sys, json, os
+name, ref_name, host_path, registry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+try:
+    with open(registry) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+entry = data.get("containers", {}).get(name)
+if not entry:
+    sys.exit(0)
+refs = entry.get("refs", {})
+refs[ref_name] = host_path
+entry["refs"] = refs
+tmp = registry + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, registry)
+PYEOF
+}
+
+registry_remove_ref() {
+    local name="$1" ref_name="$2"
+    local registry="${HOME}/.claudebox/registry.json"
+    python3 - "$name" "$ref_name" "$registry" <<'PYEOF'
+import sys, json, os
+name, ref_name, registry = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(registry) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+entry = data.get("containers", {}).get(name)
+if not entry:
+    sys.exit(0)
+refs = entry.get("refs", {})
+refs.pop(ref_name, None)
+entry["refs"] = refs
+tmp = registry + ".tmp"
+with open(tmp, "w") as f:
+    json.dump(data, f, indent=2)
+os.replace(tmp, registry)
+PYEOF
+}
+
+registry_get_refs() {
+    # Outputs "ref_name\thost_path" lines for the given container.
+    local name="$1"
+    local registry="${HOME}/.claudebox/registry.json"
+    [[ ! -f "$registry" ]] && return 0
+    python3 - "$name" "$registry" <<'PYEOF'
+import sys, json
+name, registry = sys.argv[1], sys.argv[2]
+try:
+    with open(registry) as f:
+        data = json.load(f)
+except (FileNotFoundError, json.JSONDecodeError):
+    sys.exit(0)
+refs = data.get("containers", {}).get(name, {}).get("refs", {})
+for ref_name, host_path in refs.items():
+    print(f"{ref_name}\t{host_path}")
 PYEOF
 }
 
@@ -464,6 +533,20 @@ cmd_init() {
     lang_str=$(IFS=,; echo "${languages[*]}")
     registry_add "$container_name" "$cwd" "$lang_str"
 
+    # Re-apply saved refs from registry (survives rebuild)
+    local _ref_name _host_path
+    while IFS=$'\t' read -r _ref_name _host_path; do
+        [[ -z "$_ref_name" ]] && continue
+        if [[ -d "$_host_path" ]]; then
+            echo "Restoring reference '${_ref_name}' from ${_host_path}..."
+            docker exec "$container_name" mkdir -p "/workspace/refs/${_ref_name}"
+            docker cp "${_host_path}/." "${container_name}:/workspace/refs/${_ref_name}"
+            docker exec "$container_name" chmod -R a-w "/workspace/refs/${_ref_name}"
+        else
+            echo "Warning: ref '${_ref_name}' source not found at ${_host_path}, skipping."
+        fi
+    done < <(registry_get_refs "$container_name")
+
     # Attach shell as node user (unless --no-start was passed)
     if $no_start; then
         echo "Container '${container_name}' is ready. Run 'claudebox' to attach."
@@ -611,6 +694,9 @@ cmd_ref() {
     docker cp "${target}/." "${container_name}:/workspace/refs/${ref_name}"
     docker exec "$container_name" chmod -R a-w "/workspace/refs/${ref_name}"
     echo "Reference '${ref_name}' is ready at /workspace/refs/${ref_name}."
+
+    # Persist ref source path in registry so refs survive rebuild.
+    registry_save_ref "$container_name" "$ref_name" "$target"
 }
 
 # --- Subcommand: extract ---
@@ -700,9 +786,15 @@ cmd_prune() {
 
     if $all; then
         docker exec "$container_name" rm -rf /workspace/refs
+        # Clear all refs from registry
+        local _ref_name
+        while IFS=$'\t' read -r _ref_name _; do
+            registry_remove_ref "$container_name" "$_ref_name"
+        done < <(registry_get_refs "$container_name")
         echo "All references removed."
     elif [[ -n "$target" ]]; then
         docker exec "$container_name" rm -rf "/workspace/refs/${target}"
+        registry_remove_ref "$container_name" "$target"
         echo "Reference '${target}' removed."
     else
         local listing

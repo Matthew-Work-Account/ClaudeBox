@@ -385,22 +385,31 @@ def register_container(name, project_dir, language=""):
     and displays consistently across host locales in the GUI.
 
     When a new container replaces an old one for the same project_dir, the
-    pinned state is transferred from the old entry and the old entry is
-    unpinned to prevent duplicate pins on the dashboard.
+    pinned state and refs are transferred from the old entry and the old
+    entry is unpinned to prevent duplicate pins on the dashboard.
     """
     registry = _read_json_file(_REGISTRY_PATH)
     containers = registry.get("containers", {})
-    # Transfer pinned state from any other container with the same project_dir.
+    # Transfer pinned state and refs from any other container with the same project_dir.
     inherited_pin = False
+    inherited_refs = {}
     for other_name, other_meta in containers.items():
-        if other_name != name and other_meta.get("project_dir") == project_dir and other_meta.get("pinned"):
-            inherited_pin = True
-            containers[other_name] = dict(other_meta, pinned=False)
+        if other_name != name and other_meta.get("project_dir") == project_dir:
+            if other_meta.get("pinned"):
+                inherited_pin = True
+                containers[other_name] = dict(other_meta, pinned=False)
+            if other_meta.get("refs"):
+                inherited_refs.update(other_meta["refs"])
+    # Also preserve refs from any existing entry with the same name (rebuild case).
+    existing = containers.get(name, {})
+    if existing.get("refs"):
+        inherited_refs.update(existing["refs"])
     containers[name] = {
         "project_dir": project_dir,
         "language": language,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "pinned": inherited_pin,
+        "refs": inherited_refs,
     }
     registry["containers"] = containers
     _write_json_atomic(_REGISTRY_PATH, registry)
@@ -1466,7 +1475,7 @@ def close_all_terminals():
 
 
 def remove_ref(container_name, ref_name):
-    """Delete a ref directory from inside the container.
+    """Delete a ref directory from inside the container and remove from registry.
 
     Sanitizes ref_name to prevent path traversal. Returns {"ok": True} or {"error": ...}.
     """
@@ -1480,6 +1489,15 @@ def remove_ref(container_name, ref_name):
         )
         if r.returncode != 0:
             return {"error": r.stderr.strip() or "rm failed"}
+        # Remove from registry so it doesn't get restored on rebuild.
+        registry = _read_json_file(_REGISTRY_PATH)
+        entry = registry.get("containers", {}).get(container_name)
+        if entry and "refs" in entry:
+            entry["refs"].pop(ref_name, None)
+            try:
+                _write_json_atomic(_REGISTRY_PATH, registry)
+            except OSError:
+                pass
         return {"ok": True}
     except subprocess.TimeoutExpired:
         return {"error": "timed out"}
