@@ -1199,18 +1199,13 @@ def create_terminal_session(container_name):
             # Stale session — clean up
             _cleanup_session(container_name)
 
-        # Use tmux if available in the container, otherwise fall back to zsh.
-        # Working directory must be a container-side path (not the host project_dir).
-        _has_tmux = subprocess.run(
-            ["docker", "exec", container_name, "which", "tmux"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        ).returncode == 0
-        if _has_tmux:
-            cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color", container_name,
-                   "tmux", "new-session", "-A", "-s", "claudebox", "-c", "/workspace"]
-        else:
-            cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color",
-                   "-w", "/workspace", container_name, "zsh"]
+        # GUI terminal uses plain zsh (not tmux) because:
+        # 1. The GUI already handles session persistence (PTY stays alive, soft disconnect)
+        # 2. tmux fights with xterm.js over terminal size (garbled redraws)
+        # 3. Sharing a tmux session between GUI and popout causes smallest-client resizing
+        # Popout terminals (open_terminal) use tmux for detach/reattach persistence.
+        cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color",
+               "-w", "/workspace", container_name, "zsh"]
         try:
             if HAS_PTY:
                 master_fd, slave_fd = _pty_mod.openpty()
