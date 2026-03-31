@@ -3843,9 +3843,30 @@ function _createDashboardTile(name, grid) {
     _openDashboardFullscreen(name);
   });
 
+  const nativeBtn = document.createElement("button");
+  nativeBtn.className = "dashboard-tile-native cmd-btn";
+  nativeBtn.title = "Open in terminal";
+  nativeBtn.textContent = "\u21B1";
+  nativeBtn.addEventListener("click", function (e) {
+    e.stopPropagation();
+    nativeBtn.disabled = true;
+    fetch("/api/containers/" + encodeURIComponent(name) + "/terminal", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ terminal: "auto" }),
+    })
+      .then(function (r) { return r.json(); })
+      .then(function (result) {
+        nativeBtn.disabled = false;
+        if (result.error) { nativeBtn.title = result.error; }
+      })
+      .catch(function () { nativeBtn.disabled = false; });
+  });
+
   header.appendChild(statusDot);
   header.appendChild(nameSpan);
   header.appendChild(unpinBtn);
+  header.appendChild(nativeBtn);
   header.appendChild(fsBtn);
 
   const xtermContainer = document.createElement("div");

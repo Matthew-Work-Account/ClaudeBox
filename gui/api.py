@@ -976,15 +976,20 @@ def open_terminal(name, terminal_type="auto"):
     import platform
     import shutil as _shutil
 
-    # Use tmux if available in the container, otherwise fall back to zsh.
-    _has_tmux = subprocess.run(
-        ["docker", "exec", name, "which", "tmux"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
-    if _has_tmux:
-        docker_cmd = "docker exec -it -u node -e TERM=xterm-256color " + shlex.quote(name) + " tmux new-session -A -s claudebox"
+    # Read optional startup_command from per-container .claudebox.json (ref: DL-002).
+    _startup_cmd = ""
+    _reg = _read_json_file(_REGISTRY_PATH)
+    _project_dir = _reg.get("containers", {}).get(name, {}).get("project_dir", "")
+    if _project_dir:
+        _startup_cmd = get_local_config(_project_dir).get("startup_command", "")
+    if _startup_cmd:
+        docker_cmd = ("docker exec -it -u node -w /workspace -e TERM=xterm-256color "
+                      + shlex.quote(name) + " zsh -c " + shlex.quote(_startup_cmd))
     else:
         docker_cmd = "docker exec -it -u node -w /workspace -e TERM=xterm-256color " + shlex.quote(name) + " zsh"
+    # Escape docker_cmd for embedding in AppleScript double-quoted string literals.
+    # shlex.quote may produce double-quotes when startup_command contains single-quotes.
+    _as_cmd = docker_cmd.replace("\\", "\\\\").replace('"', '\\"')
     system = platform.system().lower()
     release = platform.uname().release.lower()
     is_wsl = system == "linux" and "microsoft" in release
@@ -1033,14 +1038,14 @@ def open_terminal(name, terminal_type="auto"):
         elif terminal_type == "macos-terminal":
             subprocess.Popen(
                 ["osascript", "-e",
-                 f'tell application "Terminal" to do script "{docker_cmd}"'],
+                 f'tell application "Terminal" to do script "{_as_cmd}"'],
                 start_new_session=True,
             )
         elif terminal_type == "iterm":
             subprocess.Popen(
                 ["osascript", "-e",
                  f'tell application "iTerm" to create window with default profile'
-                 f' command "{docker_cmd}"'],
+                 f' command "{_as_cmd}"'],
                 start_new_session=True,
             )
         elif terminal_type == "gnome-terminal":
@@ -1181,8 +1186,9 @@ _reaper_started = False  # True while _idle_reaper daemon thread is running (DL-
 
 
 def create_terminal_session(container_name):
-    """Spawn docker exec -it <name> zsh with PTY allocation.
+    """Reuse or spawn a PTY session for container_name.
 
+    Spawns: docker exec -it -u node -e TERM=xterm-256color -w /workspace <name> zsh (ref: DL-001).
     Uses pty.openpty() when available (Linux/macOS); falls back to
     subprocess.Popen with pipes when pty module is absent (Windows).
     Returns {ok: True} or {error: ...}.
@@ -1199,15 +1205,16 @@ def create_terminal_session(container_name):
             # Stale session — clean up
             _cleanup_session(container_name)
 
-        # Use tmux if available in the container, otherwise fall back to zsh.
         # Working directory must be a container-side path (not the host project_dir).
-        _has_tmux = subprocess.run(
-            ["docker", "exec", container_name, "which", "tmux"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        ).returncode == 0
-        if _has_tmux:
-            cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color", container_name,
-                   "tmux", "new-session", "-A", "-s", "claudebox", "-c", "/workspace"]
+        # Read optional startup_command from per-container .claudebox.json (ref: DL-002).
+        _startup_cmd = ""
+        _reg = _read_json_file(_REGISTRY_PATH)
+        _project_dir = _reg.get("containers", {}).get(container_name, {}).get("project_dir", "")
+        if _project_dir:
+            _startup_cmd = get_local_config(_project_dir).get("startup_command", "")
+        if _startup_cmd:
+            cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color",
+                   "-w", "/workspace", container_name, "zsh", "-c", _startup_cmd]
         else:
             cmd = ["docker", "exec", "-it", "-u", "node", "-e", "TERM=xterm-256color",
                    "-w", "/workspace", container_name, "zsh"]
@@ -1229,13 +1236,16 @@ def create_terminal_session(container_name):
                     "lock": threading.Lock(),
                     "subscribers": [],
                     "last_activity": 0,
+                    "startup_command": _startup_cmd,
                 }
             else:
                 # Pipe fallback for Windows where pty is unavailable.
                 # os.setsid is POSIX-only — use it only when available (not on Windows/nt).
                 _preexec = os.setsid if hasattr(os, "setsid") else None
+                # Pipe fallback for Windows — PTY unavailable; multiplexers need PTY so
+                # startup_command is intentionally ignored here (ref: DL-004).
                 proc = subprocess.Popen(
-                    ["docker", "exec", "-i", "-u", "node", container_name, "zsh"],
+                    ["docker", "exec", "-i", "-u", "node", "-w", "/workspace", container_name, "zsh"],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
@@ -1247,6 +1257,7 @@ def create_terminal_session(container_name):
                     "lock": threading.Lock(),
                     "subscribers": [],
                     "last_activity": 0,
+                    "startup_command": "",
                 }
         except Exception as e:
             return {"error": str(e)}

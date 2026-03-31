@@ -134,6 +134,20 @@ via `POST /api/containers/<name>/terminal/input`. xterm.js is loaded from CDN �
 no build step needed (DL-003). If the CDN is unreachable, `window._xtermJsFailed`
 is set and a fallback message is shown.
 
+The GUI always spawns plain `zsh` inside the container (ref: DL-001). No tmux
+detection is performed. Users who want a multiplexer can set `startup_command`
+in `.claudebox.json`:
+
+```json
+{ "startup_command": "tmux new-session -A -s main" }
+```
+
+`startup_command` is stored in the session dict at connect time. Changes take
+effect on the next fresh connect (an existing live session is not interrupted).
+Each dashboard tile has a ↱ button that opens the container in a native OS
+terminal. When `startup_command` is set, both the in-browser xterm and the
+native terminal attach to the same named multiplexer session.
+
 **SSE+POST vs WebSocket (DL-001)**: WebSocket requires a raw HTTP upgrade and
 frame parser that cannot be satisfied by Python stdlib alone. SSE+POST keeps the
 terminal within `http.server.ThreadingHTTPServer` at the cost of one HTTP
@@ -269,7 +283,11 @@ is imminent (e.g. page reload). The reaper thread starts on the first
 ## Terminal Session Lifecycle
 
 1. `create_terminal_session()` reuses an existing PTY session if one is alive for the
-   container, or spawns a new `docker exec -it zsh` process (DL-007). One session per container.
+   container, or spawns a new `docker exec -it zsh` process (DL-007). It reads
+   `startup_command` from `.claudebox.json` via the registry → `project_dir` →
+   `get_local_config()` chain and stores it in the session dict. If set, the command
+   is passed to `docker exec` in place of bare `zsh`. Changes to `startup_command`
+   take effect on the next fresh connect; an active session is not restarted. One session per container.
 2. `_start_broadcaster()` launches one reader thread for the session.
 3. Each SSE handler (detail panel tab, dashboard tile) calls `subscribe_terminal()` and
    receives a dedicated `queue.Queue(maxsize=1024)`.
