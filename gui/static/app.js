@@ -68,7 +68,6 @@ const refAddOutput = document.getElementById("ref-add-output");
 
 const modulesPanel           = document.getElementById("modules-panel");
 const settingsPanel          = document.getElementById("settings-panel");
-const assistantPanel         = document.getElementById("assistant-panel");
 const globalModuleList       = document.getElementById("global-module-list");
 const globalModuleEditorPanel= document.getElementById("global-module-editor-panel");
 const globalModuleEditorTitle= document.getElementById("global-module-editor-title");
@@ -137,16 +136,13 @@ function showPanel(name) {
   welcomePanel.classList.add("hidden");
   modulesPanel.classList.add("hidden");
   settingsPanel.classList.add("hidden");
-  assistantPanel.classList.add("hidden");
   if (name === "detail")         detailPanel.classList.remove("hidden");
   else if (name === "new")       newPanel.classList.remove("hidden");
   else if (name === "modules")   modulesPanel.classList.remove("hidden");
   else if (name === "settings")  settingsPanel.classList.remove("hidden");
-  else if (name === "assistant") { assistantPanel.classList.remove("hidden"); _assistantOnOpen(); }
   else                           welcomePanel.classList.remove("hidden");
   document.getElementById("modules-nav-btn").classList.toggle("active", name === "modules");
   document.getElementById("settings-nav-btn").classList.toggle("active", name === "settings");
-  document.getElementById("assistant-nav-btn").classList.toggle("active", name === "assistant");
 }
 
 /** Set text and error/success class on a status message element. */
@@ -3661,21 +3657,29 @@ document.getElementById("ref-add-btn").addEventListener("click", function () {
   });
 });
 
-// --- Claude Assistant ---
+// --- Claude Assistant (floating chat bubble) ---
 
-document.getElementById("assistant-nav-btn").addEventListener("click", function () {
-  showPanel("assistant");
+document.getElementById("assistant-bubble-btn").addEventListener("click", function () {
+  const overlay = document.getElementById("assistant-overlay");
+  const isHidden = overlay.classList.contains("hidden");
+  overlay.classList.toggle("hidden", !isHidden);
+  if (isHidden) _assistantOnOpen();
 });
 
-/** Called each time the assistant panel is opened; updates the context badge. */
+document.getElementById("assistant-close-btn").addEventListener("click", function () {
+  document.getElementById("assistant-overlay").classList.add("hidden");
+});
+
+/** Called each time the overlay is opened; updates the context badge. */
 function _assistantOnOpen() {
   const badge = document.getElementById("assistant-context-badge");
   if (selectedContainer) {
-    badge.textContent = "Context: " + (selectedContainer.nickname || selectedContainer.name);
+    badge.textContent = selectedContainer.nickname || selectedContainer.name;
     badge.classList.remove("hidden");
   } else {
     badge.classList.add("hidden");
   }
+  document.getElementById("assistant-input").focus();
 }
 
 // Conversation history: [{role:"user"|"assistant", content:"..."}]
