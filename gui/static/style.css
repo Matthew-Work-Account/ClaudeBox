@@ -2747,6 +2747,16 @@ details.new-form-accordion[open] > summary.new-form-accordion-toggle::before {
   padding: 4px 10px;
 }
 
+.terminal-ephemeral-notice {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 4px 8px;
+  background: var(--bg-hover);
+  border-radius: 4px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+}
+
 .terminal-profile-row {
   display: flex;
   align-items: center;

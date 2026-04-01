@@ -51,16 +51,6 @@
           </svg>
           <span>Module Library</span>
         </button>
-        <!-- Dashboard nav: navigates to #dashboard-panel (DL-001) -->
-        <button id="dashboard-nav-btn" class="sidebar-tool-item">
-          <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
-            <rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor"/>
-            <rect x="8" y="1" width="6" height="6" rx="1" fill="currentColor" opacity="0.5"/>
-            <rect x="1" y="8" width="6" height="6" rx="1" fill="currentColor" opacity="0.5"/>
-            <rect x="8" y="8" width="6" height="6" rx="1" fill="currentColor"/>
-          </svg>
-          <span>Terminals</span>
-        </button>
         <button id="settings-nav-btn" class="sidebar-tool-item">
           <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
             <circle cx="7.5" cy="7.5" r="2" stroke="currentColor" stroke-width="1.2"/>
@@ -322,8 +312,6 @@
                 <button id="terminal-connect-btn" class="cmd-btn cmd-terminal">▶ Connect</button>
                 <button id="terminal-disconnect-btn" class="cmd-btn cmd-stop hidden">✕ Disconnect</button>
                 <button id="terminal-popout-btn" class="cmd-btn" title="Open in native terminal">↗ Popout</button>
-                <!-- Pin button: toggles container pin state in registry via PATCH /api/containers/<name>/pin (DL-005). -->
-                <button id="detail-pin-btn" class="cmd-btn dashboard-pin-btn">Pin</button>
                 <button id="term-stop-start-btn" class="cmd-btn cmd-stop" data-terminal="1">⏹ Stop</button>
               </div>
             </div>
@@ -338,6 +326,9 @@
             </div>
             <div id="terminal-xterm-fallback" class="terminal-fallback hidden">
               xterm.js failed to load. Check your network connection and reload the page.
+            </div>
+            <div id="terminal-ephemeral-notice" class="terminal-ephemeral-notice">
+              Terminal sessions are ephemeral — they end when you navigate away or close this tab.
             </div>
             <div id="terminal-xterm-container" class="terminal-xterm-container"></div>
           </div>
@@ -624,30 +615,6 @@
         </div>
       </section>
 
-      <!-- #dashboard-panel: top-level panel rendered by showPanel("dashboard") (DL-001).
-           #dashboard-grid: populated by renderDashboardGrid() in app.js.
-           #dashboard-fullscreen-overlay: position:fixed overlay for interactive terminal
-           sessions; hidden by default, shown by _openDashboardFullscreen() (DL-013). -->
-      <section id="dashboard-panel" class="panel hidden">
-        <div class="dashboard-header">
-          <h2>Terminals</h2>
-        </div>
-        <div id="dashboard-grid" class="dashboard-grid"></div>
-        <div id="dashboard-empty-state" class="dashboard-empty-state">
-          No terminals pinned. Open a container and click <strong>Pin</strong> to add it here.
-        </div>
-      </section>
-
-      <!-- Fullscreen overlay for dashboard terminal interaction -->
-      <div id="dashboard-fullscreen-overlay" class="dashboard-fullscreen-overlay hidden">
-        <div class="dashboard-fullscreen-header">
-          <span id="fullscreen-container-name" class="dashboard-fullscreen-title"></span>
-          <span id="fullscreen-status-label" class="terminal-status-label"></span>
-          <button id="fullscreen-close-btn" class="cmd-btn">&#x2715; Close</button>
-        </div>
-        <div id="fullscreen-xterm-container" class="dashboard-fullscreen-body"></div>
-      </div>
-
       <section id="welcome-panel" class="panel">
         <div class="welcome">
           <h2>ClaudeBox Dashboard</h2>
@@ -656,8 +623,6 @@
       </section>
     </main>
   </div>
-
-  <!-- #dashboard-fullscreen-overlay: fullscreen overlay for dashboard terminal tiles. -->
 
   <!-- File viewer modal: hidden by default, shown when a file is clicked in the Files tab -->
   <div id="file-viewer-modal" class="file-viewer-modal hidden" role="dialog" aria-modal="true">

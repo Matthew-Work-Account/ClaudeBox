@@ -60,19 +60,6 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
 
         self._send_json({"error": "not found"}, status=404)
 
-    # --- PATCH routing ---
-    def do_PATCH(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length) if length else b""
-
-        if path.startswith("/api/"):
-            return self._handle_api_patch(path, body)
-
-        self._send_json({"error": "not found"}, status=404)
-
     # --- DELETE routing ---
     # Mirrors do_POST: reads optional JSON body, delegates to _handle_api_delete.
     # Body is optional so callers can pass filter params in the JSON body instead
@@ -379,27 +366,6 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
 
         self._send_json({"error": "not found"}, status=404)
 
-    # Routes PATCH /api/containers/<name>/pin to api.patch_container_pin.
-    def _handle_api_patch(self, path, body):
-        try:
-            data = json.loads(body) if body else {}
-        except (json.JSONDecodeError, ValueError):
-            return self._send_json({"error": "invalid JSON"}, status=400)
-
-        # PATCH /api/containers/<name>/pin — set pinned field in registry
-        if path.startswith("/api/containers/") and path.endswith("/pin"):
-            name = path[len("/api/containers/"):-len("/pin")]
-            if not name or "/" in name:
-                return self._send_json({"error": "invalid container name"}, status=400)
-            pinned = data.get("pinned")
-            if pinned is None:
-                return self._send_json({"error": "pinned field required"}, status=400)
-            result = api.patch_container_pin(name, bool(pinned))
-            status = 404 if result.get("error") == "not found" else (400 if "error" in result else 200)
-            return self._send_json(result, status=status)
-
-        self._send_json({"error": "not found"}, status=404)
-
     # Routes DELETE /api/modules to api.delete_module. Pattern matches _handle_api_post:
     # parse body JSON, dispatch by path, return 400 on validation errors. (ref: plan:DL-006)
     def _handle_api_delete(self, path, query, body):
@@ -516,14 +482,10 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
     def _handle_terminal_stream(self, container_name):
         """SSE stream for terminal output of a named container.
 
-        Creates or reuses a PTY session via api.create_terminal_session().
-        Registers a subscriber queue with api.subscribe_terminal() so this handler
-        receives a copy of all PTY output from the shared broadcaster thread (DL-003).
+        Creates a fresh PTY session via api.create_terminal_session().
+        Sessions are ephemeral: the PTY is hard-killed when this SSE handler exits.
         Streams output bytes base64-encoded as SSE events (format: {"data": "<b64>"}).
-        Sends "heartbeat" SSE comments every 10 seconds when idle to keep the
-        connection alive through proxies.
-        Calls api.unsubscribe_terminal() in the finally block; does NOT call DELETE,
-        preserving the PTY session for other active subscribers (DL-006).
+        Sends heartbeat SSE comments every 10 seconds when idle.
         """
         import queue
         import base64
@@ -539,14 +501,29 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 
-        q = api.subscribe_terminal(container_name)
+        q = queue.Queue(maxsize=256)
+        stop_evt = threading.Event()
+
+        def _reader():
+            while not stop_evt.is_set():
+                chunk = api.read_terminal(container_name, timeout=0.05)
+                if chunk is None:
+                    q.put(None)
+                    return
+                if chunk:
+                    try:
+                        q.put_nowait(chunk)
+                    except queue.Full:
+                        pass
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
 
         try:
             while True:
                 try:
                     chunk = q.get(timeout=10)
                 except queue.Empty:
-                    # Heartbeat to keep connection alive
                     self.wfile.write(b": heartbeat\n\n")
                     self.wfile.flush()
                     continue
@@ -559,7 +536,9 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
         except OSError:
             pass
         finally:
-            api.unsubscribe_terminal(container_name, q)
+            stop_evt.set()
+            t.join(timeout=1)
+            api.close_terminal(container_name)
 
     def _handle_local_terminal_stream(self):
         """SSE stream for the local host shell terminal output."""
