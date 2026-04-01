@@ -1712,10 +1712,12 @@ def stream_assistant_chat(container_name, message, history):
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
             text=True,
             preexec_fn=os.setsid if os.name != "nt" else None,
         )
 
+        text_sent = False
         for line in proc.stdout:
             line = line.strip()
             if not line:
@@ -1733,6 +1735,7 @@ def stream_assistant_chat(container_name, message, history):
                 if inner.get("type") == "content_block_delta":
                     delta = inner.get("delta", {})
                     if delta.get("type") == "text_delta" and delta.get("text"):
+                        text_sent = True
                         yield f"data: {json.dumps({'type': 'text', 'text': delta['text']})}\n\n"
 
             # Error from the CLI
@@ -1744,11 +1747,15 @@ def stream_assistant_chat(container_name, message, history):
 
         proc.wait(timeout=10)
 
-        if proc.returncode not in (0, None):
-            stderr = proc.stderr.read() if proc.stderr else ""
-            if stderr.strip():
-                yield f"data: {json.dumps({'type': 'error', 'message': stderr.strip()})}\n\n"
-                return
+        if proc.returncode not in (0, None) or not text_sent:
+            stderr = (proc.stderr.read() if proc.stderr else "").strip()
+            if stderr:
+                yield f"data: {json.dumps({'type': 'error', 'message': stderr})}\n\n"
+            elif not text_sent:
+                yield (
+                    f"data: {json.dumps({'type': 'error', 'message': f'claude exited with no output (code {proc.returncode}). Run: claude --version to check it is installed and authenticated on the host.'})}\n\n"
+                )
+            return
 
     except Exception as exc:
         yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
