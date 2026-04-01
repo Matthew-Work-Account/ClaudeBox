@@ -1703,6 +1703,7 @@ def stream_assistant_chat(container_name, message, history):
         "--include-partial-messages",
         "--verbose",
         "--no-session-persistence",
+        "--dangerously-skip-permissions",  # required for subprocess (no TTY); safe because --allowedTools none
         "--model", "haiku",
         "--allowedTools", "none",
     ]
