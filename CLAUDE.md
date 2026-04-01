@@ -8,7 +8,7 @@ You are running inside a ClaudeBox container. This is a sandboxed Docker environ
 - **OS**: Debian 12 (bookworm-slim)
 - **Shell**: zsh
 - **Workspace**: Your project is mounted at `/workspace/{project-name}` (read-write)
-- **Pre-installed**: git, curl, wget, jq, python3, zsh, tmux
+- **Pre-installed**: git, curl, wget, jq, python3, zsh
 - **Claude Code**: Pre-installed at `/home/node/.local/bin/claude`
 
 ## What You CAN'T Do
@@ -137,5 +137,5 @@ exposes by default.
 | `gui/README.md`       | GUI architecture decisions, invariants, key tradeoffs         | Understanding GUI design before modifying it             |
 | `languages/`          | Per-language JSON configs (domains, packages, mounts)         | Adding a language or changing language-specific settings |
 | `modules/`            | Optional module JSON definitions (e.g. SqlServer)             | Adding or modifying optional container modules           |
-| `.devcontainer/`      | Dockerfile (image definition, pre-installed packages, default zshrc/tmux.conf) and init scripts | Changing container image, pre-installed packages, or init/firewall behavior |
+| `.devcontainer/`      | Dockerfile (image definition, pre-installed packages, default zshrc) and init scripts | Changing container image, pre-installed packages, or init/firewall behavior |
 | `README.md`           | User-facing setup and usage guide                             | Understanding user workflows before changing CLI UX      |
