@@ -1703,6 +1703,7 @@ def stream_assistant_chat(container_name, message, history):
         "--include-partial-messages",
         "--verbose",
         "--no-session-persistence",
+        "--dangerously-skip-permissions",
         "--model", "haiku",
         "--allowedTools", "none",
     ]
@@ -1753,7 +1754,7 @@ def stream_assistant_chat(container_name, message, history):
                 yield f"data: {json.dumps({'type': 'error', 'message': stderr})}\n\n"
             elif not text_sent:
                 yield (
-                    f"data: {json.dumps({'type': 'error', 'message': f'claude exited with no output (code {proc.returncode}). Run: claude --version to check it is installed and authenticated on the host.'})}\n\n"
+                    f"data: {json.dumps({'type': 'error', 'message': f'claude exited with no output (code {proc.returncode}). Binary: {claude_bin}. Run it manually: {claude_bin} --version'})}\n\n"
                 )
             return
 
