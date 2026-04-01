@@ -7,7 +7,9 @@ and suggesting --port rather than auto-incrementing (DL-006).
 """
 import argparse
 import errno
+import os
 import signal
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -15,6 +17,26 @@ from http.server import ThreadingHTTPServer
 
 from .server import ClaudeBoxHandler
 from . import api
+
+
+def _open_browser(url):
+    """Open url in the user's browser, handling WSL and headless environments."""
+    # WSL: use cmd.exe so the Windows default browser opens instead of gio/xdg.
+    try:
+        with open("/proc/version") as f:
+            if "microsoft" in f.read().lower():
+                subprocess.run(
+                    ["cmd.exe", "/c", "start", "", url],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                return
+    except OSError:
+        pass
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
 
 
 def main():
@@ -61,10 +83,7 @@ def main():
     url = f"http://127.0.0.1:{args.port}/"
     print(f"ClaudeBox GUI running at {url}")
     print("Press Ctrl+C to stop.")
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    _open_browser(url)
 
     shutdown_event.wait()
     httpd.shutdown()
