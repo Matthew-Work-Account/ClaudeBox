@@ -68,6 +68,7 @@ const refAddOutput = document.getElementById("ref-add-output");
 
 const modulesPanel           = document.getElementById("modules-panel");
 const settingsPanel          = document.getElementById("settings-panel");
+const assistantPanel         = document.getElementById("assistant-panel");
 const globalModuleList       = document.getElementById("global-module-list");
 const globalModuleEditorPanel= document.getElementById("global-module-editor-panel");
 const globalModuleEditorTitle= document.getElementById("global-module-editor-title");
@@ -136,13 +137,16 @@ function showPanel(name) {
   welcomePanel.classList.add("hidden");
   modulesPanel.classList.add("hidden");
   settingsPanel.classList.add("hidden");
-  if (name === "detail")        detailPanel.classList.remove("hidden");
-  else if (name === "new")      newPanel.classList.remove("hidden");
-  else if (name === "modules")  modulesPanel.classList.remove("hidden");
-  else if (name === "settings") settingsPanel.classList.remove("hidden");
-  else                          welcomePanel.classList.remove("hidden");
+  assistantPanel.classList.add("hidden");
+  if (name === "detail")         detailPanel.classList.remove("hidden");
+  else if (name === "new")       newPanel.classList.remove("hidden");
+  else if (name === "modules")   modulesPanel.classList.remove("hidden");
+  else if (name === "settings")  settingsPanel.classList.remove("hidden");
+  else if (name === "assistant") { assistantPanel.classList.remove("hidden"); _assistantOnOpen(); }
+  else                           welcomePanel.classList.remove("hidden");
   document.getElementById("modules-nav-btn").classList.toggle("active", name === "modules");
   document.getElementById("settings-nav-btn").classList.toggle("active", name === "settings");
+  document.getElementById("assistant-nav-btn").classList.toggle("active", name === "assistant");
 }
 
 /** Set text and error/success class on a status message element. */
@@ -3655,6 +3659,231 @@ document.getElementById("ref-add-btn").addEventListener("click", function () {
   streamToTerminal(args, selectedContainer.project_path || null, refAddOutput, function (ok) {
     if (ok) loadRefs(selectedContainer.name);
   });
+});
+
+// --- Claude Assistant ---
+
+document.getElementById("assistant-nav-btn").addEventListener("click", function () {
+  showPanel("assistant");
+});
+
+/** Called each time the assistant panel is opened; updates the context badge. */
+function _assistantOnOpen() {
+  const badge = document.getElementById("assistant-context-badge");
+  if (selectedContainer) {
+    badge.textContent = "Context: " + (selectedContainer.nickname || selectedContainer.name);
+    badge.classList.remove("hidden");
+  } else {
+    badge.classList.add("hidden");
+  }
+}
+
+// Conversation history: [{role:"user"|"assistant", content:"..."}]
+let _assistantHistory = [];
+let _assistantStreaming = false;
+
+/** Append a message bubble to the chat. Returns the element (for streaming updates). */
+function _assistantAddMessage(role, content) {
+  const messagesEl = document.getElementById("assistant-messages");
+  const intro = messagesEl.querySelector(".assistant-intro");
+  if (intro) intro.remove();
+
+  const bubble = document.createElement("div");
+  bubble.className = "assistant-bubble assistant-bubble-" + role;
+
+  const body = document.createElement("div");
+  body.className = "assistant-bubble-body";
+  body.textContent = content;
+  bubble.appendChild(body);
+
+  messagesEl.appendChild(bubble);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return bubble;
+}
+
+/** Parse <suggestions>[...]</suggestions> from assistant text. Returns {text, suggestions}. */
+function _assistantParseSuggestions(text) {
+  const match = text.match(/<suggestions>([\s\S]*?)<\/suggestions>/);
+  if (!match) return { text: text.trim(), suggestions: [] };
+  const clean = text.replace(/<suggestions>[\s\S]*?<\/suggestions>/, "").trim();
+  let suggestions = [];
+  try { suggestions = JSON.parse(match[1].trim()); } catch (_) {}
+  return { text: clean, suggestions };
+}
+
+/** Render suggestion chips after an assistant message bubble. */
+function _assistantRenderSuggestions(bubble, suggestions) {
+  if (!suggestions || !suggestions.length) return;
+  const chips = document.createElement("div");
+  chips.className = "assistant-suggestions";
+  suggestions.forEach(function (s) {
+    const chip = document.createElement("div");
+    chip.className = "assistant-suggestion-chip";
+    chip.innerHTML =
+      '<span class="suggestion-field">' + escHtml(s.field) + '</span>' +
+      '<span class="suggestion-desc">' + escHtml(s.description || "") + '</span>' +
+      '<button class="suggestion-apply-btn">Apply to Config</button>';
+    chip.querySelector(".suggestion-apply-btn").addEventListener("click", function () {
+      _assistantApplySuggestion(s);
+    });
+    chips.appendChild(chip);
+  });
+  bubble.appendChild(chips);
+}
+
+/** Apply a suggestion: populate the local config editor with the suggested value. */
+function _assistantApplySuggestion(s) {
+  if (!selectedContainer) {
+    alert("No container selected. Select a container first, then open the Config tab.");
+    return;
+  }
+  // Navigate to the detail panel → Config tab → Local sub-tab
+  showPanel("detail");
+  activateTab("detail", "config");
+  activateTab("config", s.scope === "global" ? "global" : "local");
+
+  // Read current editor/view value, merge the suggestion, populate the editor
+  const isGlobal = s.scope === "global";
+  const viewEl = isGlobal
+    ? document.getElementById("global-config-view")
+    : document.getElementById("local-config-view");
+  const editBtn = isGlobal
+    ? document.getElementById("global-edit-btn")
+    : document.getElementById("local-edit-btn");
+  const editorEl = isGlobal
+    ? document.getElementById("global-config-editor")
+    : document.getElementById("local-config-editor");
+  const rawToggleBtn = isGlobal
+    ? document.getElementById("global-form-raw-btn")
+    : document.getElementById("local-form-raw-btn");
+
+  // Enter edit mode if not already in it
+  if (editBtn && !editBtn.classList.contains("hidden")) {
+    editBtn.click();
+  }
+
+  // Switch to raw JSON mode so we can directly populate the textarea
+  if (rawToggleBtn && rawToggleBtn.classList.contains("hidden") === false) {
+    rawToggleBtn.click();
+  }
+
+  // Parse existing config from the editor (or view if editor is empty)
+  let cfg = {};
+  const raw = editorEl ? editorEl.value.trim() : "";
+  if (raw) {
+    try { cfg = JSON.parse(raw); } catch (_) {}
+  } else if (viewEl) {
+    try { cfg = JSON.parse(viewEl.textContent); } catch (_) {}
+  }
+
+  cfg[s.field] = s.value;
+  if (editorEl) {
+    editorEl.value = JSON.stringify(cfg, null, 2);
+    editorEl.dispatchEvent(new Event("input"));
+  }
+}
+
+/** Send a message to the assistant and stream the response. */
+async function _assistantSend() {
+  if (_assistantStreaming) return;
+  const input = document.getElementById("assistant-input");
+  const sendBtn = document.getElementById("assistant-send-btn");
+  const message = input.value.trim();
+  if (!message) return;
+
+  input.value = "";
+  _assistantStreaming = true;
+  sendBtn.disabled = true;
+  sendBtn.textContent = "…";
+
+  _assistantAddMessage("user", message);
+  _assistantHistory.push({ role: "user", content: message });
+
+  // Streaming response bubble
+  const bubble = _assistantAddMessage("assistant", "");
+  const bodyEl = bubble.querySelector(".assistant-bubble-body");
+  let fullText = "";
+
+  try {
+    const resp = await fetch("/api/assistant/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: message,
+        history: _assistantHistory.slice(0, -1), // exclude the message we just added
+        container_name: selectedContainer ? selectedContainer.name : null,
+      }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop(); // keep partial line
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        const payload = line.slice(6).trim();
+        if (!payload) continue;
+        let evt;
+        try { evt = JSON.parse(payload); } catch (_) { continue; }
+        if (evt.type === "text") {
+          fullText += evt.text;
+          const parsed = _assistantParseSuggestions(fullText);
+          bodyEl.textContent = parsed.text || "…";
+          document.getElementById("assistant-messages").scrollTop =
+            document.getElementById("assistant-messages").scrollHeight;
+        } else if (evt.type === "error") {
+          bodyEl.textContent = "Error: " + evt.message;
+          bodyEl.classList.add("assistant-error");
+          fullText = "";
+          break;
+        } else if (evt.type === "done") {
+          break;
+        }
+      }
+    }
+  } catch (e) {
+    bodyEl.textContent = "Error: " + e.message;
+    bodyEl.classList.add("assistant-error");
+    fullText = "";
+  }
+
+  if (fullText) {
+    const { text, suggestions } = _assistantParseSuggestions(fullText);
+    bodyEl.textContent = text;
+    _assistantHistory.push({ role: "assistant", content: text });
+    _assistantRenderSuggestions(bubble, suggestions);
+  }
+
+  _assistantStreaming = false;
+  sendBtn.disabled = false;
+  sendBtn.textContent = "Send";
+  document.getElementById("assistant-messages").scrollTop =
+    document.getElementById("assistant-messages").scrollHeight;
+}
+
+document.getElementById("assistant-send-btn").addEventListener("click", _assistantSend);
+
+document.getElementById("assistant-input").addEventListener("keydown", function (e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    _assistantSend();
+  }
+});
+
+document.getElementById("assistant-clear-btn").addEventListener("click", function () {
+  _assistantHistory = [];
+  const messagesEl = document.getElementById("assistant-messages");
+  messagesEl.innerHTML =
+    '<div class="assistant-intro">' +
+    '<p>Describe a problem with your container or config and I\'ll help you debug it.</p>' +
+    '<p class="assistant-intro-hint">I can suggest config changes and pre-fill the editor — you decide what to apply.</p>' +
+    '</div>';
 });
 
 // --- Init ---

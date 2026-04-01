@@ -364,6 +364,15 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
             result = api.make_directory(path_val)
             return self._send_json(result, status=(400 if "error" in result else 200))
 
+        # POST /api/assistant/stream — stream a Claude assistant reply
+        if path == "/api/assistant/stream":
+            message = data.get("message", "")
+            history = data.get("history", [])
+            container_name = data.get("container_name") or None
+            if not message:
+                return self._send_json({"error": "message required"}, status=400)
+            return self._handle_assistant_stream(container_name, message, history)
+
         self._send_json({"error": "not found"}, status=404)
 
     # Routes DELETE /api/modules to api.delete_module. Pattern matches _handle_api_post:
@@ -539,6 +548,20 @@ class ClaudeBoxHandler(SimpleHTTPRequestHandler):
             stop_evt.set()
             t.join(timeout=1)
             api.close_terminal(container_name)
+
+    def _handle_assistant_stream(self, container_name, message, history):
+        """Stream Claude assistant reply as SSE events."""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+        try:
+            for event in api.stream_assistant_chat(container_name, message, history):
+                self.wfile.write(event.encode())
+                self.wfile.flush()
+        except OSError:
+            pass
 
     def _handle_local_terminal_stream(self):
         """SSE stream for the local host shell terminal output."""

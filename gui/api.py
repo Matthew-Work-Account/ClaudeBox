@@ -1513,4 +1513,246 @@ _atexit.register(close_all_terminals)
 try:
     _signal.signal(_signal.SIGTERM, lambda *_: close_all_terminals())
 except (OSError, ValueError):
+    pass
+
+
+# --- Claude assistant ---
+
+def _build_assistant_system_prompt(context):
+    """Build a system prompt for the assistant with ClaudeBox knowledge and container context."""
+    lines = [
+        "You are a helpful assistant embedded in the ClaudeBox GUI. ClaudeBox is a tool that runs "
+        "Claude AI inside sandboxed Docker containers for software development.",
+        "",
+        "## ClaudeBox Config Fields (.claudebox.json / ~/.claudebox/config.json)",
+        "Settings merge: global config (~/.claudebox/config.json) is overridden by local (.claudebox.json).",
+        "- language: str — node/python/dotnet/go/rust/java/none/auto",
+        "- extra_domains: list[str] — hostnames allowed through the container firewall (e.g. 'registry.example.com')",
+        "- extra_suffixes: list[str] — wildcard domain suffix allowlist (e.g. 'microsoft.com')",
+        "- extra_apt_packages: list[str] — Debian packages installed at container init",
+        "- extra_commands: list[str] — shell commands run as root at init (use carefully)",
+        "- modules: list[str] — module names to apply (extend config with named presets)",
+        "- extra_volumes: dict — additional Docker volume/bind mounts",
+        "- extra_env: list[str] — environment variable assignments (e.g. 'FOO=bar')",
+        "- startup_command: str — command to run when the in-browser terminal connects",
+        "- persist_claude_data: bool — keep Claude's data across container rebuilds",
+        "",
+        "## Container Firewall",
+        "Containers have an allowlist-based firewall. Network errors (ECONNREFUSED, timeouts) almost always mean "
+        "a domain is not in the allowlist. Fix: add the domain to extra_domains in local config, then rebuild.",
+        "Pre-allowed by language: node→registry.npmjs.org, python→pypi.org/files.pythonhosted.org, "
+        "dotnet→*.microsoft.com/nuget.org, go→proxy.golang.org, rust→crates.io, java→repo1.maven.org.",
+        "Always allowed: github.com, api.anthropic.com, deb.debian.org.",
+        "",
+        "## Common Issues",
+        "- Package install fails with network error → missing domain in extra_domains, needs rebuild",
+        "- 'externally-managed-environment' pip error → use --break-system-packages, pip domain must be allowlisted",
+        "- Container won't start → check docker logs, may be port conflict or volume issue",
+        "- extra_commands fail → they run as root at init time; test the command in a terminal first",
+        "- startup_command ignored → only takes effect on the next fresh terminal connect",
+        "",
+        "## Suggestions Format",
+        "When you suggest config changes, ALWAYS include them at the END of your response in this exact format:",
+        "<suggestions>",
+        '[{"field":"extra_domains","value":["example.com"],"description":"Allow package downloads","scope":"local"}]',
+        "</suggestions>",
+        "Rules for suggestions:",
+        "- scope must be 'local' or 'global'",
+        "- value must be the complete new value for the field (not a delta)",
+        "- Only include suggestions when you are confident they will help",
+        "- For list fields, include ALL items (existing + new) so the user can apply without losing data",
+        "- Never suggest extra_commands unless the user explicitly asks",
+        "",
+    ]
+
+    if context.get("container"):
+        c = context["container"]
+        lines.append(f"## Current Container: {c.get('name', 'unknown')}")
+        lines.append(f"- Language: {c.get('language', 'unknown')}")
+        lines.append(f"- Project path: {c.get('project_path', 'unknown')}")
+        if context.get("docker_status"):
+            lines.append(f"- Docker status: {context['docker_status']}")
+        lines.append("")
+
+    if context.get("merged_config") and not context["merged_config"].get("error"):
+        lines.append("## Effective (Merged) Config")
+        lines.append("```json")
+        lines.append(json.dumps(context["merged_config"], indent=2))
+        lines.append("```")
+        lines.append("")
+
+    if context.get("local_config") and not context["local_config"].get("error"):
+        lines.append("## Local Config (.claudebox.json) — what the user can edit")
+        lines.append("```json")
+        lines.append(json.dumps(context["local_config"], indent=2))
+        lines.append("```")
+        lines.append("")
+
+    if context.get("global_config"):
+        lines.append("## Global Config (~/.claudebox/config.json)")
+        lines.append("```json")
+        lines.append(json.dumps(context["global_config"], indent=2))
+        lines.append("```")
+        lines.append("")
+
+    if context.get("modules"):
+        lines.append("## Available Modules")
+        for m in context["modules"]:
+            status = "applied" if m["applied"] else "not applied"
+            lines.append(f"- {m['name']} ({m['scope']}, {status}): {m['description']}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def get_assistant_context(container_name):
+    """Gather container context for the assistant."""
+    context = {}
+    if not container_name:
+        return context
+
+    registry = _read_json_file(_REGISTRY_PATH)
+    containers = registry.get("containers", {})
+    entry = containers.get(container_name)
+    if not entry:
+        return context
+
+    project_path = entry.get("project_path") or entry.get("project_dir", "")
+    context["container"] = {
+        "name": container_name,
+        "language": entry.get("language", ""),
+        "project_path": project_path,
+    }
+
+    # Docker status
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "-a", "--filter", f"name=^{container_name}$",
+             "--format", "{{.Status}}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            context["docker_status"] = r.stdout.strip()
+    except Exception:
+        pass
+
+    if project_path:
+        local = get_local_config(project_path)
+        if not local.get("error"):
+            context["local_config"] = local
+        merged = get_merged_config(project_path)
+        if not merged.get("error"):
+            context["merged_config"] = merged
+
+    try:
+        global_cfg = get_global_config()
+        context["global_config"] = global_cfg if not global_cfg.get("error") else {}
+    except Exception:
+        context["global_config"] = {}
+
+    try:
+        modules = list_modules(project_path if project_path else None)
+        context["modules"] = [
+            {"name": m["name"], "description": m["description"], "scope": m["scope"], "applied": m["applied"]}
+            for m in modules
+        ]
+    except Exception:
+        context["modules"] = []
+
+    return context
+
+
+def stream_assistant_chat(container_name, message, history):
+    """Invoke the host `claude` CLI and yield SSE-formatted event strings.
+
+    Uses `claude -p` with `--output-format stream-json --include-partial-messages`
+    so text arrives incrementally without requiring an explicit API key (the CLI
+    uses the user's existing Claude Code credentials). No pip dependencies.
+
+    Streams {"type":"text","text":"..."} events and a final {"type":"done"} event.
+    """
+    import shutil
+
+    claude_bin = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+    if not os.path.isfile(claude_bin):
+        yield (
+            'data: {"type":"error","message":"claude CLI not found. '
+            'Install Claude Code on the host machine to use the assistant."}\n\n'
+        )
+        return
+
+    context = get_assistant_context(container_name) if container_name else {}
+    system = _build_assistant_system_prompt(context)
+
+    # Format conversation history into the prompt text.  claude -p is one-shot,
+    # so prior turns are embedded as labelled blocks the model can follow.
+    prompt_parts = []
+    for h in (history or []):
+        role = h.get("role", "user")
+        content = (h.get("content") or "").strip()
+        if content:
+            label = "User" if role == "user" else "Assistant"
+            prompt_parts.append(f"{label}: {content}")
+    prompt_parts.append(f"User: {message}")
+    full_prompt = "\n\n".join(prompt_parts)
+
+    cmd = [
+        claude_bin, "-p", full_prompt,
+        "--system-prompt", system,
+        "--output-format", "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+        "--no-session-persistence",
+        "--model", "haiku",
+        "--allowedTools", "none",
+    ]
+
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            preexec_fn=os.setsid if os.name != "nt" else None,
+        )
+
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                evt = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            evt_type = evt.get("type", "")
+
+            # Streaming text delta
+            if evt_type == "stream_event":
+                inner = evt.get("event", {})
+                if inner.get("type") == "content_block_delta":
+                    delta = inner.get("delta", {})
+                    if delta.get("type") == "text_delta" and delta.get("text"):
+                        yield f"data: {json.dumps({'type': 'text', 'text': delta['text']})}\n\n"
+
+            # Error from the CLI
+            elif evt_type == "result" and evt.get("subtype") == "error":
+                msg = evt.get("result") or "Unknown error from claude CLI"
+                yield f"data: {json.dumps({'type': 'error', 'message': msg})}\n\n"
+                proc.wait(timeout=5)
+                return
+
+        proc.wait(timeout=10)
+
+        if proc.returncode not in (0, None):
+            stderr = proc.stderr.read() if proc.stderr else ""
+            if stderr.strip():
+                yield f"data: {json.dumps({'type': 'error', 'message': stderr.strip()})}\n\n"
+                return
+
+    except Exception as exc:
+        yield f"data: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+        return
+
+    yield 'data: {"type":"done"}\n\n'
     pass  # signal registration may fail in non-main threads
