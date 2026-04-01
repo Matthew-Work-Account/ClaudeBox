@@ -1703,7 +1703,6 @@ def stream_assistant_chat(container_name, message, history):
         "--include-partial-messages",
         "--verbose",
         "--no-session-persistence",
-        "--dangerously-skip-permissions",
         "--model", "haiku",
         "--allowedTools", "none",
     ]
@@ -1719,6 +1718,7 @@ def stream_assistant_chat(container_name, message, history):
         )
 
         text_sent = False
+        non_json_lines = []
         for line in proc.stdout:
             line = line.strip()
             if not line:
@@ -1726,6 +1726,7 @@ def stream_assistant_chat(container_name, message, history):
             try:
                 evt = json.loads(line)
             except json.JSONDecodeError:
+                non_json_lines.append(line)
                 continue
 
             evt_type = evt.get("type", "")
@@ -1753,8 +1754,9 @@ def stream_assistant_chat(container_name, message, history):
             if stderr:
                 yield f"data: {json.dumps({'type': 'error', 'message': stderr})}\n\n"
             elif not text_sent:
+                detail = " | ".join(non_json_lines) if non_json_lines else f"binary: {claude_bin}"
                 yield (
-                    f"data: {json.dumps({'type': 'error', 'message': f'claude exited with no output (code {proc.returncode}). Binary: {claude_bin}. Run it manually: {claude_bin} --version'})}\n\n"
+                    f"data: {json.dumps({'type': 'error', 'message': f'claude exited with no output (code {proc.returncode}): {detail}'})}\n\n"
                 )
             return
 
