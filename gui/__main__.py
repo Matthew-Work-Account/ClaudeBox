@@ -61,7 +61,10 @@ def main():
     url = f"http://127.0.0.1:{args.port}/"
     print(f"ClaudeBox GUI running at {url}")
     print("Press Ctrl+C to stop.")
-    webbrowser.open(url)
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
 
     shutdown_event.wait()
     httpd.shutdown()
