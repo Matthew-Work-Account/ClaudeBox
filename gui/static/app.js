@@ -340,9 +340,10 @@ function selectContainer(c) {
   const termStopBtn2 = document.getElementById("term-stop-start-btn");
   const terminalBtn2 = document.querySelector('[data-cmd="terminal"]');
   if (cls === "removed") {
+    // Hide destroy (nothing to docker-rm), but keep unregister so stale entries can be cleaned up
     if (destroyBtn2) destroyBtn2.classList.add("hidden");
-    if (unregBtn2) unregBtn2.classList.add("hidden");
-    if (overflowToggleBtn) overflowToggleBtn.classList.add("hidden");
+    if (unregBtn2) unregBtn2.classList.remove("hidden");
+    if (overflowToggleBtn) overflowToggleBtn.classList.remove("hidden");
     if (stopStartBtn2) stopStartBtn2.disabled = true;
     if (termStopBtn2) termStopBtn2.disabled = true;
     if (terminalBtn2) terminalBtn2.disabled = true;
